@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -46,7 +47,6 @@ jobs:
             out/make/**/*.exe
             out/make/**/*.zip
             out/make/**/*.deb
-            out/make/**/*.rpm
 
   release:
     needs: build
