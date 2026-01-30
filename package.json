@@ -1,0 +1,57 @@
+{
+  "name": "pdf2zh-app",
+  "productName": "pdf2zh-app",
+  "version": "1.0.0",
+  "description": "PDF translation app using layout detection and text overlay",
+  "main": ".vite/build/index.js",
+  "private": true,
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "lint": "eslint --ext .ts,.tsx .",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major"
+  },
+  "keywords": [],
+  "author": {
+    "name": "Liu",
+    "email": "liunuozhi1995@gmail.com"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/liunuozhi/pdf2zh-app",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-rpm": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron/fuses": "^1.8.0",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/sharp": "^0.31.1",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "electron": "40.1.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.32.0",
+    "typescript": "~5.3.0",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.48.0",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "@vitalets/google-translate-api": "^9.2.1",
+    "canvas": "^3.2.1",
+    "electron-squirrel-startup": "^1.0.1",
+    "onnxruntime-node": "^1.23.2",
+    "path2d": "^0.3.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.530",
+    "sharp": "^0.34.5"
+  }
+}

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>pdf2zh - PDF Translator</title>
+    <link rel="stylesheet" href="/src/renderer/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>pdf2zh</h1>
+        <p class="subtitle">PDF Translation with Layout Detection</p>
+        <div id="version-info" class="version-info">
+          <span id="version-label"></span>
+          <a id="update-link" href="#" class="update-badge" style="display:none;"></a>
+        </div>
+      </header>
+
+      <main>
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-zone-content">
+            <svg class="drop-icon" viewBox="0 0 24 24" width="48" height="48">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="none" stroke="currentColor" stroke-width="2"/>
+              <polyline points="14 2 14 8 20 8" fill="none" stroke="currentColor" stroke-width="2"/>
+            </svg>
+            <p>Drop PDF here or <button id="browse-btn" type="button">browse</button></p>
+          </div>
+        </div>
+
+        <div id="file-list" class="file-list" style="display:none;"></div>
+
+        <div id="translate-actions" style="display:none;">
+          <button id="select-pages-btn" type="button" class="btn">Select Pages</button>
+          <button id="translate-btn" type="button" class="btn btn-primary">Translate</button>
+        </div>
+
+        <div id="progress-section" class="progress-section" style="display:none;">
+          <div class="progress-info">
+            <span id="progress-stage">Ready</span>
+            <span id="progress-pages"></span>
+          </div>
+          <div class="progress-bar-container">
+            <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <div class="progress-actions">
+            <button id="cancel-btn" type="button" class="btn btn-danger" style="display:none;">Cancel</button>
+          </div>
+        </div>
+
+        <div id="output-section" class="output-section" style="display:none;">
+          <p id="output-message"></p>
+          <div class="output-actions">
+            <button id="open-file-btn" type="button" class="btn btn-primary">Open File</button>
+            <button id="open-folder-btn" type="button" class="btn">Open Folder</button>
+          </div>
+        </div>
+      </main>
+
+      <aside id="settings-panel" class="settings-panel">
+        <h2>Settings</h2>
+
+        <div class="form-group">
+          <label for="translator-select">Translator</label>
+          <select id="translator-select">
+            <option value="google">Google Translate (Free)</option>
+            <option value="llm">LLM (OpenAI-compatible)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="target-lang">Target Language</label>
+          <select id="target-lang">
+            <option value="zh-CN">Chinese (Simplified)</option>
+            <option value="zh-TW">Chinese (Traditional)</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="es">Spanish</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+
+        <div id="llm-settings" class="llm-settings" style="display:none;">
+          <div class="form-group">
+            <label for="llm-provider">Provider</label>
+            <select id="llm-provider">
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="google">Google</option>
+              <option value="mistral">Mistral</option>
+              <option value="ollama">Ollama</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="llm-model">Model</label>
+            <select id="llm-model">
+              <option value="">Select a model...</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="llm-api-token">API Token</label>
+            <input type="password" id="llm-api-token" placeholder="sk-..." />
+          </div>
+
+          <div class="form-group" id="llm-base-url-group">
+            <label for="llm-base-url">Base URL (optional)</label>
+            <input type="text" id="llm-base-url" placeholder="https://api.openai.com/v1" />
+          </div>
+
+          <div class="form-group">
+            <button id="llm-prompt-toggle" type="button" class="btn btn-sm">Customize Prompt</button>
+            <div id="llm-prompt-editor" style="display:none; margin-top:8px;">
+              <textarea id="llm-custom-prompt" rows="4" placeholder="Default: You are a professional translator..."></textarea>
+            </div>
+          </div>
+        </div>
+
+        <button id="save-settings-btn" type="button" class="btn btn-primary">Save Settings</button>
+      </aside>
+    </div>
+
+    <div id="page-select-modal" class="modal-overlay" style="display:none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Select Pages</h3>
+          <div class="modal-header-actions">
+            <button id="modal-toggle-all" type="button" class="btn btn-sm">Select All</button>
+          </div>
+        </div>
+        <div id="modal-grid" class="modal-grid"></div>
+        <div class="modal-footer">
+          <button id="modal-cancel" type="button" class="btn">Cancel</button>
+          <button id="modal-confirm" type="button" class="btn btn-primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/renderer/index.ts"></script>
+  </body>
+</html>
