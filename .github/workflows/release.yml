@@ -42,8 +42,8 @@ jobs:
           curl -L -o /tmp/NotoSansSC.zip \
             "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/18_NotoSansSC.zip"
           unzip -o /tmp/NotoSansSC.zip -d /tmp/NotoSansSC
-          cp /tmp/NotoSansSC/NotoSansSC-Regular.ttf assets/fonts/NotoSansSC-Regular.ttf
-          cp /tmp/NotoSansSC/NotoSansSC-Bold.ttf assets/fonts/NotoSansSC-Bold.ttf
+          cp /tmp/NotoSansSC/NotoSansSC-Regular.otf assets/fonts/NotoSansSC-Regular.ttf
+          cp /tmp/NotoSansSC/NotoSansSC-Bold.otf assets/fonts/NotoSansSC-Bold.ttf
 
       - name: Install dependencies
         run: npm ci
