@@ -6,7 +6,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 export interface ElectronAPI {
   getSettings: () => Promise<any>;
   saveSettings: (settings: any) => Promise<boolean>;
-  openFileDialog: () => Promise<string | null>;
+  openFileDialog: () => Promise<string[] | null>;
   translatePdf: (inputPath: string, selectedPages?: number[], customPrompt?: string) => Promise<{ success: boolean; outputPath?: string; error?: string; usage?: { inputTokens: number; outputTokens: number; totalCost: number } }>;
   cancelTranslation: () => void;
   getPdfThumbnails: (filePath: string) => Promise<{ pageCount: number; thumbnails: string[] }>;

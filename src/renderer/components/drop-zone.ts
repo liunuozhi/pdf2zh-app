@@ -1,7 +1,7 @@
 /**
- * Drop zone component: drag-and-drop + file browse.
+ * Drop zone component: drag-and-drop + file browse (multi-file support).
  */
-export function initDropZone(onFile: (filePath: string) => void) {
+export function initDropZone(onFiles: (filePaths: string[]) => void) {
   const zone = document.getElementById('drop-zone')!;
   const browseBtn = document.getElementById('browse-btn')!;
 
@@ -25,12 +25,15 @@ export function initDropZone(onFile: (filePath: string) => void) {
 
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
-      const file = files[0];
-      if (file.name.toLowerCase().endsWith('.pdf')) {
-        const filePath = window.electronAPI.getPathForFile(file);
-        if (filePath) {
-          onFile(filePath);
+      const pdfPaths: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].name.toLowerCase().endsWith('.pdf')) {
+          const filePath = window.electronAPI.getPathForFile(files[i]);
+          if (filePath) pdfPaths.push(filePath);
         }
+      }
+      if (pdfPaths.length > 0) {
+        onFiles(pdfPaths);
       }
     }
   });
@@ -38,17 +41,17 @@ export function initDropZone(onFile: (filePath: string) => void) {
   // Browse button
   browseBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const filePath = await window.electronAPI.openFileDialog();
-    if (filePath) {
-      onFile(filePath);
+    const filePaths = await window.electronAPI.openFileDialog();
+    if (filePaths && filePaths.length > 0) {
+      onFiles(filePaths);
     }
   });
 
   // Click on zone also opens browse
   zone.addEventListener('click', async () => {
-    const filePath = await window.electronAPI.openFileDialog();
-    if (filePath) {
-      onFile(filePath);
+    const filePaths = await window.electronAPI.openFileDialog();
+    if (filePaths && filePaths.length > 0) {
+      onFiles(filePaths);
     }
   });
 }

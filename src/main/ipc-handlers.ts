@@ -64,14 +64,14 @@ export function registerIpcHandlers(): void {
     return true;
   });
 
-  // Open file dialog
+  // Open file dialog (multi-selection)
   ipcMain.handle('open-file-dialog', async () => {
     const result = await dialog.showOpenDialog({
-      properties: ['openFile'],
+      properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
+    return result.filePaths;
   });
 
   // Get PDF page thumbnails

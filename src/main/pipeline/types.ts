@@ -70,6 +70,7 @@ export interface AppSettings {
   llmModel: string;
   llmApiToken: string;
   llmBaseUrl: string;
+  customPrompt: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -79,6 +80,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   llmModel: 'gpt-4o-mini',
   llmApiToken: '',
   llmBaseUrl: '',
+  customPrompt: 'You are a professional translator. Translate the following text accurately and naturally. Output only the translated text, nothing else. Preserve any formatting, numbers, and special characters.',
 };
 
 /** Layout class ID to name mapping */

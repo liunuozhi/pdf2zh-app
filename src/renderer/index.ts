@@ -4,14 +4,13 @@
 import { initDropZone } from './components/drop-zone';
 import { initProgressBar } from './components/progress-bar';
 import { initSettingsPanel } from './components/settings-panel';
-import { initFileList } from './components/file-list';
 
 declare global {
   interface Window {
     electronAPI: {
       getSettings: () => Promise<any>;
       saveSettings: (settings: any) => Promise<boolean>;
-      openFileDialog: () => Promise<string | null>;
+      openFileDialog: () => Promise<string[] | null>;
       translatePdf: (inputPath: string, selectedPages?: number[], customPrompt?: string) => Promise<{
         success: boolean;
         outputPath?: string;
@@ -32,18 +31,27 @@ declare global {
   }
 }
 
-let currentOutputPath: string | null = null;
-let pendingFilePath: string | null = null;
-let selectedPages: number[] | null = null;
+interface FileEntry {
+  path: string;
+  name: string;
+  selectedPages: number[] | null;
+  status: 'ready' | 'processing' | 'done' | 'failed';
+  outputPath?: string;
+  error?: string;
+  usage?: { inputTokens: number; outputTokens: number; totalCost: number };
+}
+
+let files: FileEntry[] = [];
+let activeFileIndex = 0;
+let isTranslating = false;
 
 function init() {
   const api = window.electronAPI;
 
   // Initialize components
-  initDropZone(handleFileSelect);
+  initDropZone(handleFilesSelect);
   initProgressBar();
   initSettingsPanel(api);
-  initFileList();
 
   // Progress listener
   api.onProgress((_event, data) => {
@@ -67,23 +75,26 @@ function init() {
 
   // Translate button
   document.getElementById('translate-btn')!.addEventListener('click', () => {
-    if (pendingFilePath) {
-      handleFile(pendingFilePath);
+    if (files.length > 0 && !isTranslating) {
+      handleTranslateAll();
     }
   });
 
-  // Select Pages button
+  // Select Pages button — opens modal for active file
   document.getElementById('select-pages-btn')!.addEventListener('click', async () => {
-    if (!pendingFilePath) return;
+    if (files.length === 0) return;
+    const entry = files[activeFileIndex];
+    if (!entry) return;
+
     const selectBtn = document.getElementById('select-pages-btn')!;
     selectBtn.textContent = 'Loading...';
     selectBtn.setAttribute('disabled', '');
 
     try {
-      const { pageCount, thumbnails } = await api.getPdfThumbnails(pendingFilePath);
+      const { pageCount, thumbnails } = await api.getPdfThumbnails(entry.path);
       openPageSelectModal(pageCount, thumbnails);
     } finally {
-      selectBtn.textContent = selectedPages ? `${selectedPages.length} Pages` : 'Select Pages';
+      updateSelectPagesButton();
       selectBtn.removeAttribute('disabled');
     }
   });
@@ -100,10 +111,13 @@ function init() {
 
   // Output buttons
   document.getElementById('open-file-btn')!.addEventListener('click', () => {
-    if (currentOutputPath) api.openFile(currentOutputPath);
+    // Open the first completed file's output
+    const doneFile = files.find(f => f.status === 'done' && f.outputPath);
+    if (doneFile?.outputPath) api.openFile(doneFile.outputPath);
   });
   document.getElementById('open-folder-btn')!.addEventListener('click', () => {
-    if (currentOutputPath) api.openFolder(currentOutputPath);
+    const doneFile = files.find(f => f.status === 'done' && f.outputPath);
+    if (doneFile?.outputPath) api.openFolder(doneFile.outputPath);
   });
 
   // Version info & update check
@@ -126,14 +140,142 @@ function init() {
   });
 }
 
+function handleFilesSelect(filePaths: string[]) {
+  // Append new files, deduplicate by path
+  const existingPaths = new Set(files.map(f => f.path));
+  for (const fp of filePaths) {
+    if (!existingPaths.has(fp)) {
+      files.push({
+        path: fp,
+        name: fp.split('/').pop() || fp,
+        selectedPages: null,
+        status: 'ready',
+      });
+      existingPaths.add(fp);
+    }
+  }
+
+  // Set active to first new file if nothing was active
+  if (files.length > 0 && activeFileIndex >= files.length) {
+    activeFileIndex = 0;
+  }
+
+  renderFileList();
+
+  // Show translate actions
+  document.getElementById('translate-actions')!.style.display = 'flex';
+  updateSelectPagesButton();
+
+  // Hide previous output
+  document.getElementById('output-section')!.style.display = 'none';
+  document.getElementById('progress-section')!.style.display = 'none';
+}
+
+function renderFileList() {
+  const fileList = document.getElementById('file-list')!;
+  fileList.style.display = files.length > 0 ? 'block' : 'none';
+  fileList.innerHTML = '';
+
+  files.forEach((entry, index) => {
+    const item = document.createElement('div');
+    item.className = `file-item${index === activeFileIndex ? ' active' : ''}`;
+
+    const fileInfo = document.createElement('div');
+    fileInfo.className = 'file-info';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'filename';
+    nameSpan.textContent = entry.name;
+    fileInfo.appendChild(nameSpan);
+
+    const meta = document.createElement('div');
+    meta.className = 'file-meta';
+
+    // Page selection label
+    const pageLabel = document.createElement('span');
+    pageLabel.className = 'page-label';
+    pageLabel.textContent = entry.selectedPages
+      ? `${entry.selectedPages.length} pages`
+      : 'All pages';
+    meta.appendChild(pageLabel);
+
+    // Status label
+    const statusLabel = document.createElement('span');
+    statusLabel.className = 'status-label';
+    const statusConfig: Record<string, { text: string; color: string }> = {
+      ready: { text: 'Ready', color: 'var(--text-secondary)' },
+      processing: { text: 'Processing...', color: 'var(--primary)' },
+      done: { text: 'Done', color: '#34c759' },
+      failed: { text: 'Failed', color: 'var(--danger)' },
+    };
+    const sc = statusConfig[entry.status];
+    statusLabel.textContent = sc.text;
+    statusLabel.style.color = sc.color;
+    if (entry.status === 'failed' && entry.error) {
+      statusLabel.title = entry.error;
+    }
+    meta.appendChild(statusLabel);
+
+    // Remove button (only when not translating)
+    if (!isTranslating) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'remove-btn';
+      removeBtn.textContent = '\u00d7';
+      removeBtn.title = 'Remove';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        files.splice(index, 1);
+        if (activeFileIndex >= files.length) {
+          activeFileIndex = Math.max(0, files.length - 1);
+        }
+        renderFileList();
+        updateSelectPagesButton();
+        if (files.length === 0) {
+          document.getElementById('translate-actions')!.style.display = 'none';
+        }
+      });
+      meta.appendChild(removeBtn);
+    }
+
+    item.appendChild(fileInfo);
+    item.appendChild(meta);
+
+    // Click to set active
+    item.addEventListener('click', () => {
+      activeFileIndex = index;
+      renderFileList();
+      updateSelectPagesButton();
+    });
+
+    fileList.appendChild(item);
+  });
+}
+
+function updateSelectPagesButton() {
+  const selectBtn = document.getElementById('select-pages-btn')!;
+  if (files.length === 0) return;
+  const entry = files[activeFileIndex];
+  if (!entry) return;
+
+  if (entry.selectedPages) {
+    selectBtn.textContent = `${entry.selectedPages.length} Pages`;
+    selectBtn.classList.add('has-selection');
+  } else {
+    selectBtn.textContent = 'Select Pages';
+    selectBtn.classList.remove('has-selection');
+  }
+}
+
 function openPageSelectModal(pageCount: number, thumbnails: string[]) {
   const modal = document.getElementById('page-select-modal')!;
   const grid = document.getElementById('modal-grid')!;
   grid.innerHTML = '';
 
+  const entry = files[activeFileIndex];
+  const currentSelection = entry?.selectedPages;
+
   for (let i = 0; i < pageCount; i++) {
     const pageNum = i + 1;
-    const isSelected = !selectedPages || selectedPages.includes(pageNum);
+    const isSelected = !currentSelection || currentSelection.includes(pageNum);
 
     const thumb = document.createElement('div');
     thumb.className = `page-thumb${isSelected ? ' selected' : ''}`;
@@ -174,22 +316,17 @@ function confirmPageSelection() {
   });
 
   const totalThumbs = thumbs.length;
-  if (pages.length === totalThumbs || pages.length === 0) {
-    // All selected or none → translate all
-    selectedPages = null;
-  } else {
-    selectedPages = pages.sort((a, b) => a - b);
+  const entry = files[activeFileIndex];
+  if (entry) {
+    if (pages.length === totalThumbs || pages.length === 0) {
+      entry.selectedPages = null;
+    } else {
+      entry.selectedPages = pages.sort((a, b) => a - b);
+    }
   }
 
-  const selectBtn = document.getElementById('select-pages-btn')!;
-  if (selectedPages) {
-    selectBtn.textContent = `${selectedPages.length} Pages`;
-    selectBtn.classList.add('has-selection');
-  } else {
-    selectBtn.textContent = 'Select Pages';
-    selectBtn.classList.remove('has-selection');
-  }
-
+  updateSelectPagesButton();
+  renderFileList();
   closePageSelectModal();
 }
 
@@ -216,27 +353,9 @@ function updateToggleAllButton() {
   document.getElementById('modal-toggle-all')!.textContent = allChecked ? 'Deselect All' : 'Select All';
 }
 
-function handleFileSelect(filePath: string) {
-  pendingFilePath = filePath;
-  selectedPages = null;
-  document.getElementById('select-pages-btn')!.textContent = 'Select Pages';
-  document.getElementById('select-pages-btn')!.classList.remove('has-selection');
-
-  // Show file name in file list
-  const fileList = document.getElementById('file-list')!;
-  fileList.style.display = 'block';
-  fileList.innerHTML = `<div class="file-item"><span class="filename">${filePath.split('/').pop() || filePath}</span><span>Ready</span></div>`;
-
-  // Show translate button
-  document.getElementById('translate-actions')!.style.display = 'block';
-
-  // Hide previous output
-  document.getElementById('output-section')!.style.display = 'none';
-  document.getElementById('progress-section')!.style.display = 'none';
-}
-
-async function handleFile(filePath: string) {
+async function handleTranslateAll() {
   const api = window.electronAPI;
+  isTranslating = true;
 
   // Hide translate button during translation
   document.getElementById('translate-actions')!.style.display = 'none';
@@ -246,47 +365,84 @@ async function handleFile(filePath: string) {
   document.getElementById('output-section')!.style.display = 'none';
   document.getElementById('cancel-btn')!.style.display = 'inline-block';
 
-  // Reset progress
-  document.getElementById('progress-stage')!.textContent = 'Starting...';
-  document.getElementById('progress-pages')!.textContent = '';
-  document.getElementById('progress-bar')!.style.width = '0%';
+  // Load custom prompt from settings
+  const settings = await api.getSettings();
+  const customPrompt = settings.customPrompt || undefined;
 
-  // Update file list
-  const fileList = document.getElementById('file-list')!;
-  fileList.style.display = 'block';
-  fileList.innerHTML = `<div class="file-item"><span class="filename">${filePath.split('/').pop() || filePath}</span><span>Processing...</span></div>`;
+  const filesToProcess = files.filter(f => f.status === 'ready' || f.status === 'failed');
 
-  const customPrompt = (document.getElementById('llm-custom-prompt') as HTMLTextAreaElement)?.value || undefined;
-  const result = await api.translatePdf(filePath, selectedPages ?? undefined, customPrompt);
+  for (let i = 0; i < filesToProcess.length; i++) {
+    const entry = filesToProcess[i];
+    entry.status = 'processing';
+    activeFileIndex = files.indexOf(entry);
+    renderFileList();
+
+    // Reset progress
+    document.getElementById('progress-stage')!.textContent = `Translating ${entry.name}...`;
+    document.getElementById('progress-pages')!.textContent = `File ${i + 1} / ${filesToProcess.length}`;
+    document.getElementById('progress-bar')!.style.width = '0%';
+
+    const result = await api.translatePdf(entry.path, entry.selectedPages ?? undefined, customPrompt);
+
+    if (result.success && result.outputPath) {
+      entry.status = 'done';
+      entry.outputPath = result.outputPath;
+      entry.usage = result.usage;
+    } else {
+      entry.status = 'failed';
+      entry.error = result.error || 'Unknown error';
+    }
+
+    renderFileList();
+  }
 
   document.getElementById('cancel-btn')!.style.display = 'none';
+  isTranslating = false;
 
+  // Show output section with summary
   const outputSection = document.getElementById('output-section')!;
   const outputMessage = document.getElementById('output-message')!;
 
-  if (result.success && result.outputPath) {
-    currentOutputPath = result.outputPath;
-    outputSection.style.display = 'block';
-    let msg = `Translation complete! Saved to: ${result.outputPath.split('/').pop()}`;
-    if (result.usage && (result.usage.inputTokens > 0 || result.usage.outputTokens > 0)) {
+  const doneCount = files.filter(f => f.status === 'done').length;
+  const failedCount = files.filter(f => f.status === 'failed').length;
+
+  if (doneCount > 0) {
+    let msg = `Translation complete! ${doneCount} file(s) translated.`;
+    if (failedCount > 0) {
+      msg += ` ${failedCount} file(s) failed.`;
+    }
+    // Show token usage for all completed files
+    const totalUsage = files
+      .filter(f => f.usage && (f.usage.inputTokens > 0 || f.usage.outputTokens > 0))
+      .reduce((acc, f) => ({
+        inputTokens: acc.inputTokens + (f.usage?.inputTokens || 0),
+        outputTokens: acc.outputTokens + (f.usage?.outputTokens || 0),
+        totalCost: acc.totalCost + (f.usage?.totalCost || 0),
+      }), { inputTokens: 0, outputTokens: 0, totalCost: 0 });
+
+    if (totalUsage.inputTokens > 0 || totalUsage.outputTokens > 0) {
       const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-      msg += `\nTokens: ${fmt(result.usage.inputTokens)} in / ${fmt(result.usage.outputTokens)} out`;
-      if (result.usage.totalCost > 0) {
-        msg += ` · Cost: $${result.usage.totalCost.toFixed(4)}`;
+      msg += `\nTokens: ${fmt(totalUsage.inputTokens)} in / ${fmt(totalUsage.outputTokens)} out`;
+      if (totalUsage.totalCost > 0) {
+        msg += ` · Cost: $${totalUsage.totalCost.toFixed(4)}`;
       }
     }
     outputMessage.textContent = msg;
-    fileList.innerHTML = `<div class="file-item"><span class="filename">${filePath.split('/').pop()}</span><span style="color: green;">Done</span></div>`;
+    document.getElementById('open-file-btn')!.style.display = 'inline-block';
+    document.getElementById('open-folder-btn')!.style.display = 'inline-block';
   } else {
-    outputSection.style.display = 'block';
-    outputMessage.textContent = `Error: ${result.error || 'Unknown error'}`;
+    const errors = files
+      .filter(f => f.status === 'failed' && f.error)
+      .map(f => `${f.name}: ${f.error}`);
+    outputMessage.textContent = `All files failed to translate.\n${errors.join('\n')}`;
     document.getElementById('open-file-btn')!.style.display = 'none';
     document.getElementById('open-folder-btn')!.style.display = 'none';
-    fileList.innerHTML = `<div class="file-item"><span class="filename">${filePath.split('/').pop()}</span><span style="color: red;">Failed</span></div>`;
   }
 
+  outputSection.style.display = 'block';
+
   // Re-show translate button for re-translation
-  document.getElementById('translate-actions')!.style.display = 'block';
+  document.getElementById('translate-actions')!.style.display = 'flex';
 }
 
 document.addEventListener('DOMContentLoaded', init);
