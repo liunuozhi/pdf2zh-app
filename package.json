@@ -1,7 +1,7 @@
 {
   "name": "pdf2zh-app",
   "productName": "pdf2zh-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PDF translation app using layout detection and text overlay",
   "main": ".vite/build/index.js",
   "private": true,
