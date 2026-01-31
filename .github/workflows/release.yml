@@ -33,6 +33,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
 
+      - name: Download assets
+        shell: bash
+        run: |
+          mkdir -p assets/models assets/fonts
+          curl -L -o assets/models/doclayout_yolo_docstructbench_imgsz1024.onnx \
+            "https://huggingface.co/wybxc/DocLayout-YOLO-DocStructBench-onnx/resolve/main/doclayout_yolo_docstructbench_imgsz1024.onnx"
+          curl -L -o /tmp/NotoSansSC.zip \
+            "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/18_NotoSansSC.zip"
+          unzip -o /tmp/NotoSansSC.zip -d /tmp/NotoSansSC
+          cp /tmp/NotoSansSC/NotoSansSC-Regular.ttf assets/fonts/NotoSansSC-Regular.ttf
+          cp /tmp/NotoSansSC/NotoSansSC-Bold.ttf assets/fonts/NotoSansSC-Bold.ttf
+
       - name: Install dependencies
         run: npm ci
 
