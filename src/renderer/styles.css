@@ -617,20 +617,5 @@ main {
 .resize-handle.sw { bottom: -4px; left: -4px; cursor: sw-resize; }
 .resize-handle.se { bottom: -4px; right: -4px; cursor: se-resize; }
 
-.editor-page-nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-#editor-page-label {
-  font-size: 13px;
-  color: var(--text-secondary);
-  min-width: 100px;
-  text-align: center;
-}
+.editor-page-wrapper { margin-bottom: 12px; }
+.editor-page-wrapper:last-child { margin-bottom: 0; }

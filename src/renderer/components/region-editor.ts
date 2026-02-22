@@ -1,6 +1,7 @@
 /**
  * Interactive region editor component.
  * Displays side-by-side original and translated views with draggable/resizable region overlays.
+ * All pages are stacked vertically in a continuous scroll view with lazy-loaded images.
  */
 
 interface BBox {
@@ -34,15 +35,19 @@ interface PageDimension {
 
 export class RegionEditor {
   private inputPath = '';
-  private currentPageIndex = 0; // index into allPageIndices
   private allPageIndices: number[] = []; // 0-based page indices with regions
   private pageCount = 0;
   private pageRegions = new Map<number, TranslatedRegion[]>();
   private pageDimensions = new Map<number, PageDimension>();
   private pageImages = new Map<number, { base64: string; width: number; height: number }>();
   private selectedRegionIndex: number | null = null;
+  private selectedPageIdx: number | null = null;
   private onExportCallback: ((outputPath: string) => void) | null = null;
   private onCloseCallback: (() => void) | null = null;
+
+  // Lazy loading
+  private loadedPages = new Set<number>();
+  private intersectionObserver: IntersectionObserver | null = null;
 
   // Drag state
   private isDragging = false;
@@ -55,6 +60,9 @@ export class RegionEditor {
   private mouseDownX = 0;
   private mouseDownY = 0;
   private activeOverlayEl: HTMLElement | null = null;
+  // Cached scale factors computed once at drag/resize start
+  private cachedScaleX = 0;
+  private cachedScaleY = 0;
 
   // ResizeObserver
   private resizeObserver: ResizeObserver | null = null;
@@ -62,11 +70,6 @@ export class RegionEditor {
 
   // DOM elements
   private container: HTMLElement;
-  private originalImage: HTMLImageElement;
-  private translatedImage: HTMLImageElement;
-  private translatedContainer: HTMLElement;
-  private overlaysContainer: HTMLElement;
-  private pageLabel: HTMLElement;
   private deleteBtn: HTMLElement;
   private exportBtn: HTMLElement;
   private originalScroll: HTMLElement;
@@ -74,11 +77,6 @@ export class RegionEditor {
 
   constructor() {
     this.container = document.getElementById('region-editor')!;
-    this.originalImage = document.getElementById('editor-original-image') as HTMLImageElement;
-    this.translatedImage = document.getElementById('editor-translated-image') as HTMLImageElement;
-    this.translatedContainer = document.getElementById('editor-translated-container')!;
-    this.overlaysContainer = document.getElementById('editor-overlays')!;
-    this.pageLabel = document.getElementById('editor-page-label')!;
     this.deleteBtn = document.getElementById('editor-delete-btn')!;
     this.exportBtn = document.getElementById('editor-export-btn')!;
     this.originalScroll = document.getElementById('editor-original-scroll')!;
@@ -89,8 +87,6 @@ export class RegionEditor {
 
   private bindEvents() {
     document.getElementById('editor-back-btn')!.addEventListener('click', () => this.close());
-    document.getElementById('editor-prev-btn')!.addEventListener('click', () => this.prevPage());
-    document.getElementById('editor-next-btn')!.addEventListener('click', () => this.nextPage());
     this.deleteBtn.addEventListener('click', () => this.deleteSelectedRegion());
     this.exportBtn.addEventListener('click', () => this.exportPdf());
 
@@ -111,11 +107,38 @@ export class RegionEditor {
       syncing = false;
     });
 
-    // Click on empty area to deselect
-    this.overlaysContainer.addEventListener('mousedown', (e) => {
-      if (e.target === this.overlaysContainer) {
+    // Event delegation on translated scroll container for all overlays
+    this.translatedScroll.addEventListener('mousedown', (e) => {
+      const target = e.target as HTMLElement;
+
+      // Find the overlay element (target or ancestor)
+      const overlay = target.closest('.region-overlay') as HTMLElement | null;
+
+      if (!overlay) {
+        // Click on empty area (scroll container, page wrapper, or image) → deselect
         this.deselectRegion();
+        return;
       }
+
+      e.stopPropagation();
+
+      // Find the page wrapper to get the page index
+      const pageWrapper = overlay.closest('.editor-page-wrapper') as HTMLElement | null;
+      if (!pageWrapper) return;
+      const pageIdx = parseInt(pageWrapper.dataset.page!, 10);
+      const index = parseInt(overlay.dataset.index!, 10);
+
+      // Resize handle click
+      if (target.classList.contains('resize-handle')) {
+        const corner = ['nw', 'ne', 'sw', 'se'].find((c) => target.classList.contains(c)) || '';
+        this.selectRegion(pageIdx, index);
+        this.startResize(e, pageIdx, index, corner, overlay);
+        return;
+      }
+
+      // Select and start drag
+      this.selectRegion(pageIdx, index);
+      this.startDrag(e, pageIdx, index, overlay);
     });
 
     // Global mouse events for drag/resize
@@ -127,11 +150,55 @@ export class RegionEditor {
       if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer);
       this.resizeDebounceTimer = setTimeout(() => {
         if (this.container.style.display !== 'none') {
-          this.renderRegionOverlays();
+          this.renderAllOverlays();
         }
       }, 100);
     });
-    this.resizeObserver.observe(this.translatedContainer);
+    this.resizeObserver.observe(this.translatedScroll);
+  }
+
+  /** Cache scale factors at drag/resize start to avoid getBoundingClientRect() on every mousemove. */
+  private cacheScaleFactors(pageIdx: number) {
+    const dims = this.pageDimensions.get(pageIdx);
+    if (!dims) return;
+    const img = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] img`
+    ) as HTMLImageElement | null;
+    if (!img) return;
+    const imgRect = img.getBoundingClientRect();
+    this.cachedScaleX = dims.pdfWidth / imgRect.width;
+    this.cachedScaleY = dims.pdfHeight / imgRect.height;
+  }
+
+  private startDrag(e: MouseEvent, pageIdx: number, index: number, overlay: HTMLElement) {
+    const regions = this.pageRegions.get(pageIdx);
+    if (!regions || index >= regions.length) return;
+
+    this.isDragging = true;
+    this.dragThresholdMet = false;
+    this.mouseDownX = e.clientX;
+    this.mouseDownY = e.clientY;
+    this.dragStartX = e.clientX;
+    this.dragStartY = e.clientY;
+    this.dragStartBBox = { ...regions[index].pdfBBox };
+    this.activeOverlayEl = overlay;
+    this.cacheScaleFactors(pageIdx);
+  }
+
+  private startResize(e: MouseEvent, pageIdx: number, index: number, corner: string, overlay: HTMLElement) {
+    const regions = this.pageRegions.get(pageIdx);
+    if (!regions || index >= regions.length) return;
+
+    this.isResizing = true;
+    this.dragThresholdMet = false;
+    this.mouseDownX = e.clientX;
+    this.mouseDownY = e.clientY;
+    this.resizeCorner = corner;
+    this.dragStartX = e.clientX;
+    this.dragStartY = e.clientY;
+    this.dragStartBBox = { ...regions[index].pdfBBox };
+    this.activeOverlayEl = overlay;
+    this.cacheScaleFactors(pageIdx);
   }
 
   async open(
@@ -150,7 +217,9 @@ export class RegionEditor {
       data.pageDimensions.map((d) => [d.pageIndex, { pdfWidth: d.pdfWidth, pdfHeight: d.pdfHeight }])
     );
     this.pageImages.clear();
+    this.loadedPages.clear();
     this.selectedRegionIndex = null;
+    this.selectedPageIdx = null;
 
     // Build list of all page indices (0-based) that have regions, sorted
     this.allPageIndices = Array.from(this.pageRegions.keys()).sort((a, b) => a - b);
@@ -158,8 +227,6 @@ export class RegionEditor {
     if (this.allPageIndices.length === 0) {
       this.allPageIndices = data.processedPages.map((p) => p - 1);
     }
-
-    this.currentPageIndex = 0;
 
     // Set filename
     const filename = data.inputPath.split('/').pop() || data.inputPath.split('\\').pop() || data.inputPath;
@@ -169,26 +236,127 @@ export class RegionEditor {
     document.getElementById('app')!.style.display = 'none';
     this.container.style.display = 'flex';
 
-    await this.renderPage();
+    this.renderAllPages();
   }
 
   close() {
     this.container.style.display = 'none';
     document.getElementById('app')!.style.display = 'grid';
     this.selectedRegionIndex = null;
+    this.selectedPageIdx = null;
     this.pageImages.clear();
+    this.loadedPages.clear();
+
+    // Disconnect IntersectionObserver
+    if (this.intersectionObserver) {
+      this.intersectionObserver.disconnect();
+      this.intersectionObserver = null;
+    }
+
+    // Clear dynamically created page elements
+    this.originalScroll.innerHTML = '';
+    this.translatedScroll.innerHTML = '';
+
     if (this.onCloseCallback) this.onCloseCallback();
   }
 
-  private get currentPageIdx(): number {
-    return this.allPageIndices[this.currentPageIndex] ?? 0;
+  /**
+   * Create page wrapper elements for all pages in both scroll containers
+   * and set up IntersectionObserver for lazy loading.
+   */
+  private renderAllPages() {
+    this.originalScroll.innerHTML = '';
+    this.translatedScroll.innerHTML = '';
+
+    const originalFragment = document.createDocumentFragment();
+    const translatedFragment = document.createDocumentFragment();
+
+    for (const pageIdx of this.allPageIndices) {
+      const dims = this.pageDimensions.get(pageIdx);
+      // Use aspect ratio from pageDimensions for placeholder sizing
+      const aspectRatio = dims ? dims.pdfWidth / dims.pdfHeight : 8.5 / 11;
+
+      // Original side wrapper
+      const origWrapper = document.createElement('div');
+      origWrapper.className = 'editor-page-wrapper';
+      origWrapper.dataset.page = String(pageIdx);
+
+      const origImgContainer = document.createElement('div');
+      origImgContainer.className = 'editor-image-container';
+
+      const origImg = document.createElement('img');
+      origImg.alt = `Original page ${pageIdx + 1}`;
+      origImg.style.aspectRatio = String(aspectRatio);
+      origImg.style.width = '100%';
+      origImg.style.background = '#e5e5ea';
+      origImgContainer.appendChild(origImg);
+      origWrapper.appendChild(origImgContainer);
+      originalFragment.appendChild(origWrapper);
+
+      // Translated side wrapper
+      const transWrapper = document.createElement('div');
+      transWrapper.className = 'editor-page-wrapper';
+      transWrapper.dataset.page = String(pageIdx);
+
+      const transImgContainer = document.createElement('div');
+      transImgContainer.className = 'editor-image-container';
+
+      const transImg = document.createElement('img');
+      transImg.alt = `Translated page ${pageIdx + 1}`;
+      transImg.style.aspectRatio = String(aspectRatio);
+      transImg.style.width = '100%';
+      transImg.style.background = '#e5e5ea';
+      transImgContainer.appendChild(transImg);
+
+      const overlaysDiv = document.createElement('div');
+      overlaysDiv.className = 'editor-overlays';
+      transImgContainer.appendChild(overlaysDiv);
+
+      transWrapper.appendChild(transImgContainer);
+      translatedFragment.appendChild(transWrapper);
+    }
+
+    this.originalScroll.appendChild(originalFragment);
+    this.translatedScroll.appendChild(translatedFragment);
+
+    // Set up IntersectionObserver on translated-side wrappers for lazy loading
+    if (this.intersectionObserver) {
+      this.intersectionObserver.disconnect();
+    }
+
+    this.intersectionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const wrapper = entry.target as HTMLElement;
+            const pageIdx = parseInt(wrapper.dataset.page!, 10);
+            if (!this.loadedPages.has(pageIdx)) {
+              this.loadPageImage(pageIdx);
+            }
+          }
+        }
+      },
+      {
+        root: this.translatedScroll,
+        rootMargin: '200px 0px',
+      }
+    );
+
+    // Observe all translated-side page wrappers
+    const translatedWrappers = this.translatedScroll.querySelectorAll('.editor-page-wrapper');
+    translatedWrappers.forEach((wrapper) => {
+      this.intersectionObserver!.observe(wrapper);
+    });
   }
 
-  private async renderPage() {
-    const pageIdx = this.currentPageIdx;
+  /** Load images for a specific page and render its overlays. */
+  private async loadPageImage(pageIdx: number) {
+    if (this.loadedPages.has(pageIdx)) return;
+    this.loadedPages.add(pageIdx);
+
     const pageNumber = pageIdx + 1; // 1-based for IPC
 
-    // Lazy-load page image
+    // Fetch image if not cached
     if (!this.pageImages.has(pageIdx)) {
       const targetWidth = Math.floor(window.innerWidth / 2 - 40);
       const imageData = await window.electronAPI.getEditorPageImage(this.inputPath, pageNumber, targetWidth);
@@ -196,17 +364,25 @@ export class RegionEditor {
     }
 
     const image = this.pageImages.get(pageIdx)!;
-    this.originalImage.src = image.base64;
-    this.translatedImage.src = image.base64;
 
-    // Update page nav
-    this.pageLabel.textContent = `Page ${pageNumber} of ${this.pageCount}`;
+    // Set src on both original and translated images for this page
+    const origImg = this.originalScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] img`
+    ) as HTMLImageElement | null;
+    const transImg = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] img`
+    ) as HTMLImageElement | null;
 
-    // Clear selection
-    this.selectedRegionIndex = null;
-    this.deleteBtn.style.display = 'none';
+    if (origImg) {
+      origImg.src = image.base64;
+      origImg.style.background = '';
+    }
+    if (transImg) {
+      transImg.src = image.base64;
+      transImg.style.background = '';
+    }
 
-    this.renderRegionOverlays();
+    this.renderPageOverlays(pageIdx);
   }
 
   /** Compute median body font size from non-title regions on a page (replicates pdf-writer logic). */
@@ -243,10 +419,38 @@ export class RegionEditor {
     return uniformBodySize;
   }
 
-  private renderRegionOverlays() {
-    this.overlaysContainer.innerHTML = '';
+  /**
+   * Binary search for the largest font size that fits within the element.
+   * O(log n) reflows instead of O(n) with the linear decrement approach.
+   */
+  private autoShrinkText(textDiv: HTMLElement, initialFontSize: number, minSize: number) {
+    textDiv.style.fontSize = `${initialFontSize}px`;
+    if (textDiv.scrollHeight <= textDiv.clientHeight) return; // already fits
 
-    const pageIdx = this.currentPageIdx;
+    let lo = minSize;
+    let hi = initialFontSize;
+
+    while (hi - lo > 0.5) {
+      const mid = (lo + hi) / 2;
+      textDiv.style.fontSize = `${mid}px`;
+      if (textDiv.scrollHeight > textDiv.clientHeight) {
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    textDiv.style.fontSize = `${lo}px`;
+  }
+
+  /** Render overlays for a single page. */
+  private renderPageOverlays(pageIdx: number) {
+    const overlaysContainer = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] .editor-overlays`
+    ) as HTMLElement | null;
+    if (!overlaysContainer) return;
+
+    overlaysContainer.innerHTML = '';
+
     const regions = this.pageRegions.get(pageIdx);
     const dims = this.pageDimensions.get(pageIdx);
     if (!regions || !dims) return;
@@ -255,9 +459,21 @@ export class RegionEditor {
     const uniformBodySize = this.computeBodyFontSize(regions);
 
     // Display scale: how many CSS pixels per PDF point
-    const imgDisplayHeight = this.translatedImage.clientHeight || this.translatedImage.naturalHeight;
+    const img = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] img`
+    ) as HTMLImageElement | null;
+    if (!img) return;
+    const imgDisplayHeight = img.clientHeight || img.naturalHeight;
     const scale = imgDisplayHeight / pdfHeight;
     const minDisplaySize = 4; // minimum font size in CSS pixels
+
+    // Build all overlays in a DocumentFragment to minimize reflows during construction
+    const fragment = document.createDocumentFragment();
+
+    // Track text divs and their initial font sizes for auto-shrink pass
+    const textEntries: { el: HTMLElement; initialSize: number }[] = [];
+
+    const isSelectedPage = this.selectedPageIdx === pageIdx;
 
     regions.forEach((region, index) => {
       const bbox = region.pdfBBox;
@@ -269,7 +485,7 @@ export class RegionEditor {
       const heightPct = (bbox.height / pdfHeight) * 100;
 
       const overlay = document.createElement('div');
-      overlay.className = `region-overlay${index === this.selectedRegionIndex ? ' selected' : ''}`;
+      overlay.className = `region-overlay${isSelectedPage && index === this.selectedRegionIndex ? ' selected' : ''}`;
       overlay.style.left = `${leftPct}%`;
       overlay.style.top = `${topPct}%`;
       overlay.style.width = `${widthPct}%`;
@@ -281,11 +497,12 @@ export class RegionEditor {
         const pdfFontSize = this.computeRegionFontSize(region, uniformBodySize);
         const padding = Math.max(2, pdfFontSize * 0.15) * scale;
         const isTitle = region.layoutBox.className === 'title';
+        const initialSize = pdfFontSize * scale;
 
         const textDiv = document.createElement('div');
         textDiv.className = 'region-overlay-text';
         textDiv.textContent = region.translatedText;
-        textDiv.style.fontSize = `${pdfFontSize * scale}px`;
+        textDiv.style.fontSize = `${initialSize}px`;
         textDiv.style.padding = `${padding}px`;
         textDiv.style.lineHeight = '1.2';
         textDiv.style.wordBreak = 'break-all';
@@ -294,87 +511,115 @@ export class RegionEditor {
           textDiv.style.fontWeight = 'bold';
         }
         overlay.appendChild(textDiv);
+        textEntries.push({ el: textDiv, initialSize });
       }
-
-      // Click to select
-      overlay.addEventListener('mousedown', (e) => {
-        e.stopPropagation();
-
-        // Check if this is a resize handle click
-        if ((e.target as HTMLElement).classList.contains('resize-handle')) {
-          return; // Handled by resize handle listener
-        }
-
-        this.selectRegion(index);
-
-        // Start drag
-        this.isDragging = true;
-        this.dragThresholdMet = false;
-        this.mouseDownX = e.clientX;
-        this.mouseDownY = e.clientY;
-        this.dragStartX = e.clientX;
-        this.dragStartY = e.clientY;
-        this.dragStartBBox = { ...bbox };
-        this.activeOverlayEl = overlay;
-      });
 
       // Add resize handles for selected region
-      if (index === this.selectedRegionIndex) {
-        const corners = ['nw', 'ne', 'sw', 'se'];
-        corners.forEach((corner) => {
-          const handle = document.createElement('div');
-          handle.className = `resize-handle ${corner}`;
-          handle.addEventListener('mousedown', (e) => {
-            e.stopPropagation();
-            this.isResizing = true;
-            this.dragThresholdMet = false;
-            this.mouseDownX = e.clientX;
-            this.mouseDownY = e.clientY;
-            this.resizeCorner = corner;
-            this.dragStartX = e.clientX;
-            this.dragStartY = e.clientY;
-            this.dragStartBBox = { ...bbox };
-            this.activeOverlayEl = overlay;
-          });
-          overlay.appendChild(handle);
-        });
+      if (isSelectedPage && index === this.selectedRegionIndex) {
+        this.appendResizeHandles(overlay);
       }
 
-      this.overlaysContainer.appendChild(overlay);
+      fragment.appendChild(overlay);
     });
 
-    // Auto-shrink text pass: reduce font size until text fits
-    const textDivs = this.overlaysContainer.querySelectorAll('.region-overlay-text') as NodeListOf<HTMLElement>;
-    textDivs.forEach((textDiv) => {
-      let fontSize = parseFloat(textDiv.style.fontSize);
-      while (textDiv.scrollHeight > textDiv.clientHeight && fontSize > minDisplaySize) {
-        fontSize -= 0.5;
-        textDiv.style.fontSize = `${fontSize}px`;
-      }
-    });
+    // Single DOM insertion
+    overlaysContainer.appendChild(fragment);
+
+    // Auto-shrink text pass using binary search (elements must be in DOM to measure)
+    for (const { el, initialSize } of textEntries) {
+      this.autoShrinkText(el, initialSize, minDisplaySize);
+    }
   }
 
-  private selectRegion(index: number) {
-    this.selectedRegionIndex = index;
+  /** Render overlays for all loaded pages. */
+  private renderAllOverlays() {
+    for (const pageIdx of this.loadedPages) {
+      this.renderPageOverlays(pageIdx);
+    }
+  }
 
-    const pageIdx = this.currentPageIdx;
+  /** Append resize handle elements to an overlay. */
+  private appendResizeHandles(overlay: HTMLElement) {
+    for (const corner of ['nw', 'ne', 'sw', 'se']) {
+      const handle = document.createElement('div');
+      handle.className = `resize-handle ${corner}`;
+      overlay.appendChild(handle);
+    }
+  }
+
+  /** Remove resize handle elements from an overlay. */
+  private removeResizeHandles(overlay: HTMLElement) {
+    overlay.querySelectorAll('.resize-handle').forEach((h) => h.remove());
+  }
+
+  /** Select a region without full DOM rebuild. */
+  private selectRegion(pageIdx: number, index: number) {
+    if (this.selectedPageIdx === pageIdx && this.selectedRegionIndex === index) return;
+
     const regions = this.pageRegions.get(pageIdx);
     if (!regions || index >= regions.length) return;
 
-    this.deleteBtn.style.display = 'inline-block';
+    // Deselect previous overlay in-place (possibly on a different page)
+    if (this.selectedRegionIndex !== null && this.selectedPageIdx !== null) {
+      const prevOverlaysContainer = this.translatedScroll.querySelector(
+        `.editor-page-wrapper[data-page="${this.selectedPageIdx}"] .editor-overlays`
+      );
+      if (prevOverlaysContainer) {
+        const prevOverlay = prevOverlaysContainer.querySelector(
+          `.region-overlay[data-index="${this.selectedRegionIndex}"]`
+        ) as HTMLElement | null;
+        if (prevOverlay) {
+          prevOverlay.classList.remove('selected');
+          this.removeResizeHandles(prevOverlay);
+        }
+      }
+    }
 
-    this.renderRegionOverlays();
+    // Select new overlay in-place
+    this.selectedPageIdx = pageIdx;
+    this.selectedRegionIndex = index;
+
+    const overlaysContainer = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] .editor-overlays`
+    );
+    if (overlaysContainer) {
+      const overlay = overlaysContainer.querySelector(
+        `.region-overlay[data-index="${index}"]`
+      ) as HTMLElement | null;
+      if (overlay) {
+        overlay.classList.add('selected');
+        this.appendResizeHandles(overlay);
+      }
+    }
+
+    this.deleteBtn.style.display = 'inline-block';
   }
 
+  /** Deselect current region without full DOM rebuild. */
   private deselectRegion() {
+    if (this.selectedRegionIndex === null || this.selectedPageIdx === null) return;
+
+    const overlaysContainer = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${this.selectedPageIdx}"] .editor-overlays`
+    );
+    if (overlaysContainer) {
+      const prevOverlay = overlaysContainer.querySelector(
+        `.region-overlay[data-index="${this.selectedRegionIndex}"]`
+      ) as HTMLElement | null;
+      if (prevOverlay) {
+        prevOverlay.classList.remove('selected');
+        this.removeResizeHandles(prevOverlay);
+      }
+    }
+
     this.selectedRegionIndex = null;
+    this.selectedPageIdx = null;
     this.deleteBtn.style.display = 'none';
-    this.renderRegionOverlays();
   }
 
   private handleMouseMove(e: MouseEvent) {
     if (!this.isDragging && !this.isResizing) return;
-    if (!this.dragStartBBox) return;
+    if (!this.dragStartBBox || this.selectedPageIdx === null || this.selectedRegionIndex === null) return;
 
     // Drag threshold: don't start moving until mouse has moved >= 3px
     if (!this.dragThresholdMet) {
@@ -388,18 +633,17 @@ export class RegionEditor {
       }
     }
 
-    const pageIdx = this.currentPageIdx;
+    const pageIdx = this.selectedPageIdx;
     const regions = this.pageRegions.get(pageIdx);
     const dims = this.pageDimensions.get(pageIdx);
-    if (!regions || !dims || this.selectedRegionIndex === null) return;
+    if (!regions || !dims || this.selectedRegionIndex >= regions.length) return;
 
     const region = regions[this.selectedRegionIndex];
     const { pdfWidth, pdfHeight } = dims;
 
-    // Get the image element's rendered dimensions to compute the scale
-    const imgRect = this.translatedImage.getBoundingClientRect();
-    const scaleX = pdfWidth / imgRect.width;
-    const scaleY = pdfHeight / imgRect.height;
+    // Use cached scale factors (computed once at drag start)
+    const scaleX = this.cachedScaleX;
+    const scaleY = this.cachedScaleY;
 
     const dxScreen = e.clientX - this.dragStartX;
     const dyScreen = e.clientY - this.dragStartY;
@@ -463,43 +707,52 @@ export class RegionEditor {
 
   private handleMouseUp() {
     const wasDragging = this.dragThresholdMet;
+    const activeEl = this.activeOverlayEl;
     this.isDragging = false;
     this.isResizing = false;
     this.dragStartBBox = null;
     this.dragThresholdMet = false;
     this.activeOverlayEl = null;
 
-    // Full re-render to recalculate text auto-shrink at final size
-    if (wasDragging) {
-      this.renderRegionOverlays();
+    // Only auto-shrink the moved/resized overlay's text (not a full re-render)
+    if (wasDragging && activeEl && this.selectedPageIdx !== null && this.selectedRegionIndex !== null) {
+      activeEl.classList.remove('dragging');
+      const textDiv = activeEl.querySelector('.region-overlay-text') as HTMLElement | null;
+      if (textDiv) {
+        const index = this.selectedRegionIndex;
+        const pageIdx = this.selectedPageIdx;
+        const regions = this.pageRegions.get(pageIdx);
+        const dims = this.pageDimensions.get(pageIdx);
+        if (regions && dims && index < regions.length) {
+          const region = regions[index];
+          const uniformBodySize = this.computeBodyFontSize(regions);
+          const pdfFontSize = this.computeRegionFontSize(region, uniformBodySize);
+          const img = this.translatedScroll.querySelector(
+            `.editor-page-wrapper[data-page="${pageIdx}"] img`
+          ) as HTMLImageElement | null;
+          const imgDisplayHeight = img ? (img.clientHeight || img.naturalHeight) : 0;
+          if (imgDisplayHeight > 0) {
+            const scale = imgDisplayHeight / dims.pdfHeight;
+            this.autoShrinkText(textDiv, pdfFontSize * scale, 4);
+          }
+        }
+      }
     }
   }
 
   private deleteSelectedRegion() {
-    if (this.selectedRegionIndex === null) return;
+    if (this.selectedRegionIndex === null || this.selectedPageIdx === null) return;
 
-    const pageIdx = this.currentPageIdx;
+    const pageIdx = this.selectedPageIdx;
     const regions = this.pageRegions.get(pageIdx);
     if (!regions) return;
 
     regions.splice(this.selectedRegionIndex, 1);
     this.selectedRegionIndex = null;
+    this.selectedPageIdx = null;
     this.deleteBtn.style.display = 'none';
-    this.renderRegionOverlays();
-  }
-
-  private async prevPage() {
-    if (this.currentPageIndex > 0) {
-      this.currentPageIndex--;
-      await this.renderPage();
-    }
-  }
-
-  private async nextPage() {
-    if (this.currentPageIndex < this.allPageIndices.length - 1) {
-      this.currentPageIndex++;
-      await this.renderPage();
-    }
+    // Full re-render needed for this page because indices shift after splice
+    this.renderPageOverlays(pageIdx);
   }
 
   private async exportPdf() {
