@@ -51,6 +51,14 @@ export class RegionEditor {
   private dragStartX = 0;
   private dragStartY = 0;
   private dragStartBBox: BBox | null = null;
+  private dragThresholdMet = false;
+  private mouseDownX = 0;
+  private mouseDownY = 0;
+  private activeOverlayEl: HTMLElement | null = null;
+
+  // ResizeObserver
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // DOM elements
   private container: HTMLElement;
@@ -58,9 +66,6 @@ export class RegionEditor {
   private translatedImage: HTMLImageElement;
   private translatedContainer: HTMLElement;
   private overlaysContainer: HTMLElement;
-  private textPanel: HTMLElement;
-  private originalTextEl: HTMLElement;
-  private translatedTextEl: HTMLTextAreaElement;
   private pageLabel: HTMLElement;
   private deleteBtn: HTMLElement;
   private exportBtn: HTMLElement;
@@ -73,9 +78,6 @@ export class RegionEditor {
     this.translatedImage = document.getElementById('editor-translated-image') as HTMLImageElement;
     this.translatedContainer = document.getElementById('editor-translated-container')!;
     this.overlaysContainer = document.getElementById('editor-overlays')!;
-    this.textPanel = document.getElementById('editor-text-panel')!;
-    this.originalTextEl = document.getElementById('editor-original-text')!;
-    this.translatedTextEl = document.getElementById('editor-translated-text') as HTMLTextAreaElement;
     this.pageLabel = document.getElementById('editor-page-label')!;
     this.deleteBtn = document.getElementById('editor-delete-btn')!;
     this.exportBtn = document.getElementById('editor-export-btn')!;
@@ -89,7 +91,6 @@ export class RegionEditor {
     document.getElementById('editor-back-btn')!.addEventListener('click', () => this.close());
     document.getElementById('editor-prev-btn')!.addEventListener('click', () => this.prevPage());
     document.getElementById('editor-next-btn')!.addEventListener('click', () => this.nextPage());
-    document.getElementById('editor-apply-btn')!.addEventListener('click', () => this.applyTextEdit());
     this.deleteBtn.addEventListener('click', () => this.deleteSelectedRegion());
     this.exportBtn.addEventListener('click', () => this.exportPdf());
 
@@ -110,9 +111,27 @@ export class RegionEditor {
       syncing = false;
     });
 
+    // Click on empty area to deselect
+    this.overlaysContainer.addEventListener('mousedown', (e) => {
+      if (e.target === this.overlaysContainer) {
+        this.deselectRegion();
+      }
+    });
+
     // Global mouse events for drag/resize
     document.addEventListener('mousemove', (e) => this.handleMouseMove(e));
     document.addEventListener('mouseup', () => this.handleMouseUp());
+
+    // ResizeObserver: re-render overlays when container size changes
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer);
+      this.resizeDebounceTimer = setTimeout(() => {
+        if (this.container.style.display !== 'none') {
+          this.renderRegionOverlays();
+        }
+      }, 100);
+    });
+    this.resizeObserver.observe(this.translatedContainer);
   }
 
   async open(
@@ -157,7 +176,6 @@ export class RegionEditor {
     this.container.style.display = 'none';
     document.getElementById('app')!.style.display = 'grid';
     this.selectedRegionIndex = null;
-    this.textPanel.style.display = 'none';
     this.pageImages.clear();
     if (this.onCloseCallback) this.onCloseCallback();
   }
@@ -186,10 +204,43 @@ export class RegionEditor {
 
     // Clear selection
     this.selectedRegionIndex = null;
-    this.textPanel.style.display = 'none';
     this.deleteBtn.style.display = 'none';
 
     this.renderRegionOverlays();
+  }
+
+  /** Compute median body font size from non-title regions on a page (replicates pdf-writer logic). */
+  private computeBodyFontSize(regions: TranslatedRegion[]): number {
+    const bodyFontSizes: number[] = [];
+    for (const region of regions) {
+      const cls = region.layoutBox.className;
+      if (
+        cls === 'plain_text' ||
+        cls === 'figure_caption' ||
+        cls === 'table_caption' ||
+        cls === 'table_footnote' ||
+        cls === 'formula_caption'
+      ) {
+        for (const block of region.textBlocks) {
+          bodyFontSizes.push(block.fontSize);
+        }
+      }
+    }
+    bodyFontSizes.sort((a, b) => a - b);
+    return bodyFontSizes.length > 0
+      ? bodyFontSizes[Math.floor(bodyFontSizes.length / 2)]
+      : 10;
+  }
+
+  /** Compute font size for a specific region (replicates pdf-writer logic). */
+  private computeRegionFontSize(region: TranslatedRegion, uniformBodySize: number): number {
+    if (region.layoutBox.className === 'title') {
+      const sizes = region.textBlocks.map((b: any) => b.fontSize);
+      return sizes.length > 0
+        ? sizes.reduce((a: number, b: number) => a + b, 0) / sizes.length
+        : uniformBodySize;
+    }
+    return uniformBodySize;
   }
 
   private renderRegionOverlays() {
@@ -201,6 +252,12 @@ export class RegionEditor {
     if (!regions || !dims) return;
 
     const { pdfWidth, pdfHeight } = dims;
+    const uniformBodySize = this.computeBodyFontSize(regions);
+
+    // Display scale: how many CSS pixels per PDF point
+    const imgDisplayHeight = this.translatedImage.clientHeight || this.translatedImage.naturalHeight;
+    const scale = imgDisplayHeight / pdfHeight;
+    const minDisplaySize = 4; // minimum font size in CSS pixels
 
     regions.forEach((region, index) => {
       const bbox = region.pdfBBox;
@@ -219,6 +276,26 @@ export class RegionEditor {
       overlay.style.height = `${heightPct}%`;
       overlay.dataset.index = String(index);
 
+      // Render translated text inside the overlay
+      if (region.translatedText) {
+        const pdfFontSize = this.computeRegionFontSize(region, uniformBodySize);
+        const padding = Math.max(2, pdfFontSize * 0.15) * scale;
+        const isTitle = region.layoutBox.className === 'title';
+
+        const textDiv = document.createElement('div');
+        textDiv.className = 'region-overlay-text';
+        textDiv.textContent = region.translatedText;
+        textDiv.style.fontSize = `${pdfFontSize * scale}px`;
+        textDiv.style.padding = `${padding}px`;
+        textDiv.style.lineHeight = '1.2';
+        textDiv.style.wordBreak = 'break-all';
+        textDiv.style.fontFamily = "'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+        if (isTitle) {
+          textDiv.style.fontWeight = 'bold';
+        }
+        overlay.appendChild(textDiv);
+      }
+
       // Click to select
       overlay.addEventListener('mousedown', (e) => {
         e.stopPropagation();
@@ -232,9 +309,13 @@ export class RegionEditor {
 
         // Start drag
         this.isDragging = true;
+        this.dragThresholdMet = false;
+        this.mouseDownX = e.clientX;
+        this.mouseDownY = e.clientY;
         this.dragStartX = e.clientX;
         this.dragStartY = e.clientY;
         this.dragStartBBox = { ...bbox };
+        this.activeOverlayEl = overlay;
       });
 
       // Add resize handles for selected region
@@ -246,10 +327,14 @@ export class RegionEditor {
           handle.addEventListener('mousedown', (e) => {
             e.stopPropagation();
             this.isResizing = true;
+            this.dragThresholdMet = false;
+            this.mouseDownX = e.clientX;
+            this.mouseDownY = e.clientY;
             this.resizeCorner = corner;
             this.dragStartX = e.clientX;
             this.dragStartY = e.clientY;
             this.dragStartBBox = { ...bbox };
+            this.activeOverlayEl = overlay;
           });
           overlay.appendChild(handle);
         });
@@ -258,10 +343,13 @@ export class RegionEditor {
       this.overlaysContainer.appendChild(overlay);
     });
 
-    // Click on empty area to deselect
-    this.overlaysContainer.addEventListener('mousedown', (e) => {
-      if (e.target === this.overlaysContainer) {
-        this.deselectRegion();
+    // Auto-shrink text pass: reduce font size until text fits
+    const textDivs = this.overlaysContainer.querySelectorAll('.region-overlay-text') as NodeListOf<HTMLElement>;
+    textDivs.forEach((textDiv) => {
+      let fontSize = parseFloat(textDiv.style.fontSize);
+      while (textDiv.scrollHeight > textDiv.clientHeight && fontSize > minDisplaySize) {
+        fontSize -= 0.5;
+        textDiv.style.fontSize = `${fontSize}px`;
       }
     });
   }
@@ -273,12 +361,6 @@ export class RegionEditor {
     const regions = this.pageRegions.get(pageIdx);
     if (!regions || index >= regions.length) return;
 
-    const region = regions[index];
-
-    // Show text panel
-    this.originalTextEl.textContent = region.fullText;
-    this.translatedTextEl.value = region.translatedText;
-    this.textPanel.style.display = 'flex';
     this.deleteBtn.style.display = 'inline-block';
 
     this.renderRegionOverlays();
@@ -286,7 +368,6 @@ export class RegionEditor {
 
   private deselectRegion() {
     this.selectedRegionIndex = null;
-    this.textPanel.style.display = 'none';
     this.deleteBtn.style.display = 'none';
     this.renderRegionOverlays();
   }
@@ -294,6 +375,18 @@ export class RegionEditor {
   private handleMouseMove(e: MouseEvent) {
     if (!this.isDragging && !this.isResizing) return;
     if (!this.dragStartBBox) return;
+
+    // Drag threshold: don't start moving until mouse has moved >= 3px
+    if (!this.dragThresholdMet) {
+      const dx = e.clientX - this.mouseDownX;
+      const dy = e.clientY - this.mouseDownY;
+      if (Math.sqrt(dx * dx + dy * dy) < 3) return;
+      this.dragThresholdMet = true;
+      // Apply dragging class to suppress CSS transitions
+      if (this.activeOverlayEl) {
+        this.activeOverlayEl.classList.add('dragging');
+      }
+    }
 
     const pageIdx = this.currentPageIdx;
     const regions = this.pageRegions.get(pageIdx);
@@ -354,24 +447,32 @@ export class RegionEditor {
       }
     }
 
-    this.renderRegionOverlays();
+    // Direct style mutation on the active overlay element (no DOM rebuild)
+    if (this.activeOverlayEl) {
+      const bbox = region.pdfBBox;
+      const leftPct = (bbox.x / pdfWidth) * 100;
+      const topPct = ((pdfHeight - bbox.y - bbox.height) / pdfHeight) * 100;
+      const widthPct = (bbox.width / pdfWidth) * 100;
+      const heightPct = (bbox.height / pdfHeight) * 100;
+      this.activeOverlayEl.style.left = `${leftPct}%`;
+      this.activeOverlayEl.style.top = `${topPct}%`;
+      this.activeOverlayEl.style.width = `${widthPct}%`;
+      this.activeOverlayEl.style.height = `${heightPct}%`;
+    }
   }
 
   private handleMouseUp() {
+    const wasDragging = this.dragThresholdMet;
     this.isDragging = false;
     this.isResizing = false;
     this.dragStartBBox = null;
-  }
+    this.dragThresholdMet = false;
+    this.activeOverlayEl = null;
 
-  private applyTextEdit() {
-    if (this.selectedRegionIndex === null) return;
-
-    const pageIdx = this.currentPageIdx;
-    const regions = this.pageRegions.get(pageIdx);
-    if (!regions) return;
-
-    const region = regions[this.selectedRegionIndex];
-    region.translatedText = this.translatedTextEl.value;
+    // Full re-render to recalculate text auto-shrink at final size
+    if (wasDragging) {
+      this.renderRegionOverlays();
+    }
   }
 
   private deleteSelectedRegion() {
@@ -383,7 +484,6 @@ export class RegionEditor {
 
     regions.splice(this.selectedRegionIndex, 1);
     this.selectedRegionIndex = null;
-    this.textPanel.style.display = 'none';
     this.deleteBtn.style.display = 'none';
     this.renderRegionOverlays();
   }
