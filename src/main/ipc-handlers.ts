@@ -6,9 +6,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { getModels } from '@mariozechner/pi-ai';
-import { runPipeline } from './pipeline';
-import { AppSettings, DEFAULT_SETTINGS } from './pipeline/types';
-import { NodeCanvasFactory } from './pipeline/page-renderer';
+import { runPipeline, runTranslatePhase, getAssetPath } from './pipeline';
+import { AppSettings, DEFAULT_SETTINGS, TranslatedRegion } from './pipeline/types';
+import { NodeCanvasFactory, renderPageToBase64Png } from './pipeline/page-renderer';
+import { writePdf } from './pipeline/pdf-writer';
 import { createCanvas } from 'canvas';
 
 function compareVersions(a: string, b: string): number {
@@ -108,26 +109,15 @@ export function registerIpcHandlers(): void {
     return { pageCount, thumbnails };
   });
 
-  // Translate PDF
+  // Translate PDF — runs stages 1-5 and returns translation data for the editor
   ipcMain.handle('translate-pdf', async (event, inputPath: string, selectedPages?: number[], customPrompt?: string) => {
     abortFlag = { aborted: false };
     const settings = loadSettings();
-
-    // Generate output path in temp dir (always writable), then copy to final location
-    const ext = path.extname(inputPath);
-    const base = path.basename(inputPath, ext);
-    const tempOutput = path.join(os.tmpdir(), `${base}_translated${ext}`);
-    // Try writing next to input first; fall back to temp dir
-    const preferredOutput = path.join(path.dirname(inputPath), `${base}_translated${ext}`);
-    let outputPath: string;
-
     const win = BrowserWindow.fromWebContents(event.sender);
 
     try {
-      // Write to temp first to avoid permission issues
-      const pipelineResult = await runPipeline({
+      const translationData = await runTranslatePhase({
         inputPath,
-        outputPath: tempOutput,
         settings,
         selectedPages,
         customPrompt,
@@ -139,17 +129,7 @@ export function registerIpcHandlers(): void {
         },
       });
 
-      // Try to copy to preferred location next to input
-      try {
-        fs.copyFileSync(tempOutput, preferredOutput);
-        outputPath = preferredOutput;
-        fs.unlinkSync(tempOutput);
-      } catch {
-        // Permission denied — keep temp path
-        outputPath = tempOutput;
-      }
-
-      return { success: true, outputPath, usage: pipelineResult.usage };
+      return { success: true, translationData };
     } catch (err: any) {
       return { success: false, error: err.message || 'Unknown error' };
     }
@@ -158,6 +138,66 @@ export function registerIpcHandlers(): void {
   // Cancel translation
   ipcMain.on('cancel-translation', () => {
     abortFlag.aborted = true;
+  });
+
+  // Get a single page image for the region editor (lazy loading)
+  let editorPdfDoc: any = null;
+  let editorPdfPath: string | null = null;
+
+  ipcMain.handle('get-editor-page-image', async (_event, inputPath: string, pageNumber: number, targetWidth: number) => {
+    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+
+    // Cache the opened PDF document between calls for the same file
+    if (editorPdfPath !== inputPath || !editorPdfDoc) {
+      if (editorPdfDoc) {
+        editorPdfDoc.destroy();
+      }
+      const loadingTask = pdfjsLib.getDocument({
+        url: inputPath,
+        useSystemFonts: true,
+        CanvasFactory: NodeCanvasFactory,
+      });
+      editorPdfDoc = await loadingTask.promise;
+      editorPdfPath = inputPath;
+    }
+
+    const page = await editorPdfDoc.getPage(pageNumber);
+    const result = await renderPageToBase64Png(page, targetWidth);
+    page.cleanup();
+    return result;
+  });
+
+  // Export PDF with modified regions from the editor
+  ipcMain.handle('export-pdf', async (_event, inputPath: string, serializedRegions: [number, TranslatedRegion[]][]) => {
+    try {
+      // Reconstruct Map from serialized array
+      const pageRegions = new Map<number, TranslatedRegion[]>(serializedRegions);
+
+      // Font paths
+      const fontPath = getAssetPath('fonts/NotoSansSC-Regular.ttf');
+      const boldFontPath = getAssetPath('fonts/NotoSansSC-Bold.ttf');
+
+      // Determine output path
+      const ext = path.extname(inputPath);
+      const base = path.basename(inputPath, ext);
+      const tempOutput = path.join(os.tmpdir(), `${base}_translated${ext}`);
+      const preferredOutput = path.join(path.dirname(inputPath), `${base}_translated${ext}`);
+
+      await writePdf(inputPath, tempOutput, pageRegions, fontPath, boldFontPath);
+
+      let outputPath: string;
+      try {
+        fs.copyFileSync(tempOutput, preferredOutput);
+        outputPath = preferredOutput;
+        fs.unlinkSync(tempOutput);
+      } catch {
+        outputPath = tempOutput;
+      }
+
+      return { success: true, outputPath };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Unknown error' };
+    }
   });
 
   // Open file in system viewer

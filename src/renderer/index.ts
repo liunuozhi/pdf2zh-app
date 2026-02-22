@@ -4,6 +4,7 @@
 import { initDropZone } from './components/drop-zone';
 import { initProgressBar } from './components/progress-bar';
 import { initSettingsPanel } from './components/settings-panel';
+import { RegionEditor } from './components/region-editor';
 
 declare global {
   interface Window {
@@ -13,12 +14,13 @@ declare global {
       openFileDialog: () => Promise<string[] | null>;
       translatePdf: (inputPath: string, selectedPages?: number[], customPrompt?: string) => Promise<{
         success: boolean;
-        outputPath?: string;
+        translationData?: any;
         error?: string;
-        usage?: { inputTokens: number; outputTokens: number; totalCost: number };
       }>;
       cancelTranslation: () => void;
       getPdfThumbnails: (filePath: string) => Promise<{ pageCount: number; thumbnails: string[] }>;
+      getEditorPageImage: (inputPath: string, pageNumber: number, targetWidth: number) => Promise<{ base64: string; width: number; height: number }>;
+      exportPdf: (inputPath: string, pageRegions: [number, any[]][]) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
       openFile: (filePath: string) => Promise<string>;
       openFolder: (filePath: string) => Promise<void>;
       onProgress: (callback: (event: any, data: any) => void) => () => void;
@@ -44,6 +46,7 @@ interface FileEntry {
 let files: FileEntry[] = [];
 let activeFileIndex = 0;
 let isTranslating = false;
+let regionEditor: RegionEditor;
 
 function init() {
   const api = window.electronAPI;
@@ -52,6 +55,7 @@ function init() {
   initDropZone(handleFilesSelect);
   initProgressBar();
   initSettingsPanel(api);
+  regionEditor = new RegionEditor();
 
   // Progress listener
   api.onProgress((_event, data) => {
@@ -384,10 +388,27 @@ async function handleTranslateAll() {
 
     const result = await api.translatePdf(entry.path, entry.selectedPages ?? undefined, customPrompt);
 
-    if (result.success && result.outputPath) {
-      entry.status = 'done';
-      entry.outputPath = result.outputPath;
-      entry.usage = result.usage;
+    if (result.success && result.translationData) {
+      // Open the region editor and wait for user to export or cancel
+      const editorResult = await new Promise<{ exported: boolean; outputPath?: string }>((resolve) => {
+        regionEditor.open(
+          result.translationData,
+          (outputPath: string) => {
+            resolve({ exported: true, outputPath });
+          },
+          () => {
+            resolve({ exported: false });
+          }
+        );
+      });
+
+      if (editorResult.exported && editorResult.outputPath) {
+        entry.status = 'done';
+        entry.outputPath = editorResult.outputPath;
+        entry.usage = result.translationData.usage;
+      } else {
+        entry.status = 'ready'; // User cancelled — can re-translate
+      }
     } else {
       entry.status = 'failed';
       entry.error = result.error || 'Unknown error';

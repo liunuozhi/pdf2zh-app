@@ -54,6 +54,16 @@ export interface TranslatedRegion extends TranslatableRegion {
   translatedText: string;
 }
 
+/** Serializable result from the translate phase (sent over IPC) */
+export interface TranslatePhaseResult {
+  inputPath: string;
+  pageCount: number;
+  processedPages: number[];           // 1-based page numbers that were translated
+  pageRegions: [number, TranslatedRegion[]][];  // serialized Map entries (pageIndex → regions)
+  pageDimensions: { pageIndex: number; pdfWidth: number; pdfHeight: number }[];
+  usage?: { inputTokens: number; outputTokens: number; totalCost: number };
+}
+
 /** Progress event sent from main to renderer */
 export interface ProgressEvent {
   stage: string;

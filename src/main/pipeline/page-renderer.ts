@@ -83,3 +83,28 @@ export async function renderPage(page: any): Promise<RenderedPage> {
 
   return { rgbBuffer, width, height, scale };
 }
+
+/**
+ * Render a single PDF page to a base64 PNG data URI.
+ * Used by the region editor to display page images on demand.
+ */
+export async function renderPageToBase64Png(
+  page: any,
+  targetWidth: number
+): Promise<{ base64: string; width: number; height: number }> {
+  const vp = page.getViewport({ scale: 1.0 });
+  const scale = targetWidth / vp.width;
+  const scaledVp = page.getViewport({ scale });
+  const width = Math.floor(scaledVp.width);
+  const height = Math.floor(scaledVp.height);
+
+  const canvas: Canvas = createCanvas(width, height);
+  const context = canvas.getContext('2d');
+
+  await page.render({ canvasContext: context as any, viewport: scaledVp }).promise;
+
+  const pngBuffer = canvas.toBuffer('image/png');
+  const base64 = `data:image/png;base64,${pngBuffer.toString('base64')}`;
+
+  return { base64, width, height };
+}

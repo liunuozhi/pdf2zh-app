@@ -7,9 +7,11 @@ export interface ElectronAPI {
   getSettings: () => Promise<any>;
   saveSettings: (settings: any) => Promise<boolean>;
   openFileDialog: () => Promise<string[] | null>;
-  translatePdf: (inputPath: string, selectedPages?: number[], customPrompt?: string) => Promise<{ success: boolean; outputPath?: string; error?: string; usage?: { inputTokens: number; outputTokens: number; totalCost: number } }>;
+  translatePdf: (inputPath: string, selectedPages?: number[], customPrompt?: string) => Promise<{ success: boolean; translationData?: any; error?: string }>;
   cancelTranslation: () => void;
   getPdfThumbnails: (filePath: string) => Promise<{ pageCount: number; thumbnails: string[] }>;
+  getEditorPageImage: (inputPath: string, pageNumber: number, targetWidth: number) => Promise<{ base64: string; width: number; height: number }>;
+  exportPdf: (inputPath: string, pageRegions: [number, any[]][]) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
   openFile: (filePath: string) => Promise<string>;
   openFolder: (filePath: string) => Promise<void>;
   onProgress: (callback: (event: any, data: any) => void) => () => void;
@@ -27,6 +29,8 @@ const api: ElectronAPI = {
   translatePdf: (inputPath, selectedPages, customPrompt) => ipcRenderer.invoke('translate-pdf', inputPath, selectedPages, customPrompt),
   cancelTranslation: () => ipcRenderer.send('cancel-translation'),
   getPdfThumbnails: (filePath) => ipcRenderer.invoke('get-pdf-thumbnails', filePath),
+  getEditorPageImage: (inputPath, pageNumber, targetWidth) => ipcRenderer.invoke('get-editor-page-image', inputPath, pageNumber, targetWidth),
+  exportPdf: (inputPath, pageRegions) => ipcRenderer.invoke('export-pdf', inputPath, pageRegions),
   openFile: (filePath) => ipcRenderer.invoke('open-file', filePath),
   openFolder: (filePath) => ipcRenderer.invoke('open-folder', filePath),
   onProgress: (callback) => {
