@@ -40,8 +40,7 @@ export class RegionEditor {
   private pageRegions = new Map<number, TranslatedRegion[]>();
   private pageDimensions = new Map<number, PageDimension>();
   private pageImages = new Map<number, { base64: string; width: number; height: number }>();
-  private selectedRegionIndex: number | null = null;
-  private selectedPageIdx: number | null = null;
+  private selectedRegions = new Set<string>(); // keys: "pageIdx:regionIndex"
   private onExportCallback: ((outputPath: string) => void) | null = null;
   private onCloseCallback: (() => void) | null = null;
 
@@ -60,6 +59,9 @@ export class RegionEditor {
   private mouseDownX = 0;
   private mouseDownY = 0;
   private activeOverlayEl: HTMLElement | null = null;
+  // Track which region is being dragged/resized (independent of selection)
+  private dragPageIdx: number | null = null;
+  private dragRegionIndex: number | null = null;
   // Cached scale factors computed once at drag/resize start
   private cachedScaleX = 0;
   private cachedScaleY = 0;
@@ -87,7 +89,7 @@ export class RegionEditor {
 
   private bindEvents() {
     document.getElementById('editor-back-btn')!.addEventListener('click', () => this.close());
-    this.deleteBtn.addEventListener('click', () => this.deleteSelectedRegion());
+    this.deleteBtn.addEventListener('click', () => this.deleteSelectedRegions());
     this.exportBtn.addEventListener('click', () => this.exportPdf());
 
     // Synchronized scrolling
@@ -128,17 +130,23 @@ export class RegionEditor {
       const pageIdx = parseInt(pageWrapper.dataset.page!, 10);
       const index = parseInt(overlay.dataset.index!, 10);
 
-      // Resize handle click
+      // Resize handle click — always single-select for resize
       if (target.classList.contains('resize-handle')) {
         const corner = ['nw', 'ne', 'sw', 'se'].find((c) => target.classList.contains(c)) || '';
-        this.selectRegion(pageIdx, index);
+        this.selectRegion(pageIdx, index, false);
         this.startResize(e, pageIdx, index, corner, overlay);
         return;
       }
 
-      // Select and start drag
-      this.selectRegion(pageIdx, index);
-      this.startDrag(e, pageIdx, index, overlay);
+      // Cmd/Ctrl+click toggles multi-select
+      const isToggle = e.metaKey || e.ctrlKey;
+      this.selectRegion(pageIdx, index, isToggle);
+
+      // Only start drag if region is still selected after toggle
+      // (prevents drag on Cmd+click-to-deselect)
+      if (this.isRegionSelected(pageIdx, index)) {
+        this.startDrag(e, pageIdx, index, overlay);
+      }
     });
 
     // Global mouse events for drag/resize
@@ -170,6 +178,19 @@ export class RegionEditor {
     this.cachedScaleY = dims.pdfHeight / imgRect.height;
   }
 
+  private regionKey(pageIdx: number, index: number): string {
+    return `${pageIdx}:${index}`;
+  }
+
+  private parseRegionKey(key: string): { pageIdx: number; index: number } {
+    const [p, i] = key.split(':');
+    return { pageIdx: parseInt(p, 10), index: parseInt(i, 10) };
+  }
+
+  private isRegionSelected(pageIdx: number, index: number): boolean {
+    return this.selectedRegions.has(this.regionKey(pageIdx, index));
+  }
+
   private startDrag(e: MouseEvent, pageIdx: number, index: number, overlay: HTMLElement) {
     const regions = this.pageRegions.get(pageIdx);
     if (!regions || index >= regions.length) return;
@@ -182,6 +203,8 @@ export class RegionEditor {
     this.dragStartY = e.clientY;
     this.dragStartBBox = { ...regions[index].pdfBBox };
     this.activeOverlayEl = overlay;
+    this.dragPageIdx = pageIdx;
+    this.dragRegionIndex = index;
     this.cacheScaleFactors(pageIdx);
   }
 
@@ -198,6 +221,8 @@ export class RegionEditor {
     this.dragStartY = e.clientY;
     this.dragStartBBox = { ...regions[index].pdfBBox };
     this.activeOverlayEl = overlay;
+    this.dragPageIdx = pageIdx;
+    this.dragRegionIndex = index;
     this.cacheScaleFactors(pageIdx);
   }
 
@@ -218,8 +243,7 @@ export class RegionEditor {
     );
     this.pageImages.clear();
     this.loadedPages.clear();
-    this.selectedRegionIndex = null;
-    this.selectedPageIdx = null;
+    this.selectedRegions.clear();
 
     // Build list of all page indices (0-based) that have regions, sorted
     this.allPageIndices = Array.from(this.pageRegions.keys()).sort((a, b) => a - b);
@@ -242,8 +266,7 @@ export class RegionEditor {
   close() {
     this.container.style.display = 'none';
     document.getElementById('app')!.style.display = 'grid';
-    this.selectedRegionIndex = null;
-    this.selectedPageIdx = null;
+    this.selectedRegions.clear();
     this.pageImages.clear();
     this.loadedPages.clear();
 
@@ -473,7 +496,7 @@ export class RegionEditor {
     // Track text divs and their initial font sizes for auto-shrink pass
     const textEntries: { el: HTMLElement; initialSize: number }[] = [];
 
-    const isSelectedPage = this.selectedPageIdx === pageIdx;
+    const singleSelected = this.selectedRegions.size === 1;
 
     regions.forEach((region, index) => {
       const bbox = region.pdfBBox;
@@ -484,8 +507,10 @@ export class RegionEditor {
       const widthPct = (bbox.width / pdfWidth) * 100;
       const heightPct = (bbox.height / pdfHeight) * 100;
 
+      const selected = this.isRegionSelected(pageIdx, index);
+
       const overlay = document.createElement('div');
-      overlay.className = `region-overlay${isSelectedPage && index === this.selectedRegionIndex ? ' selected' : ''}`;
+      overlay.className = `region-overlay${selected ? ' selected' : ''}`;
       overlay.style.left = `${leftPct}%`;
       overlay.style.top = `${topPct}%`;
       overlay.style.width = `${widthPct}%`;
@@ -514,8 +539,8 @@ export class RegionEditor {
         textEntries.push({ el: textDiv, initialSize });
       }
 
-      // Add resize handles for selected region
-      if (isSelectedPage && index === this.selectedRegionIndex) {
+      // Add resize handles only when exactly one region is selected and it's this one
+      if (selected && singleSelected) {
         this.appendResizeHandles(overlay);
       }
 
@@ -552,74 +577,114 @@ export class RegionEditor {
     overlay.querySelectorAll('.resize-handle').forEach((h) => h.remove());
   }
 
-  /** Select a region without full DOM rebuild. */
-  private selectRegion(pageIdx: number, index: number) {
-    if (this.selectedPageIdx === pageIdx && this.selectedRegionIndex === index) return;
-
+  /** Select a region without full DOM rebuild. Supports multi-select toggle. */
+  private selectRegion(pageIdx: number, index: number, toggle = false) {
     const regions = this.pageRegions.get(pageIdx);
     if (!regions || index >= regions.length) return;
 
-    // Deselect previous overlay in-place (possibly on a different page)
-    if (this.selectedRegionIndex !== null && this.selectedPageIdx !== null) {
-      const prevOverlaysContainer = this.translatedScroll.querySelector(
-        `.editor-page-wrapper[data-page="${this.selectedPageIdx}"] .editor-overlays`
-      );
-      if (prevOverlaysContainer) {
-        const prevOverlay = prevOverlaysContainer.querySelector(
-          `.region-overlay[data-index="${this.selectedRegionIndex}"]`
-        ) as HTMLElement | null;
-        if (prevOverlay) {
-          prevOverlay.classList.remove('selected');
-          this.removeResizeHandles(prevOverlay);
+    const key = this.regionKey(pageIdx, index);
+
+    if (toggle) {
+      // Cmd/Ctrl+click: add or remove from selection
+      if (this.selectedRegions.has(key)) {
+        this.selectedRegions.delete(key);
+        // Remove selected class from overlay
+        const overlay = this.getOverlayElement(pageIdx, index);
+        if (overlay) {
+          overlay.classList.remove('selected');
+          this.removeResizeHandles(overlay);
+        }
+      } else {
+        // Remove resize handles from previous single selection (if any)
+        this.removeAllResizeHandles();
+        this.selectedRegions.add(key);
+        const overlay = this.getOverlayElement(pageIdx, index);
+        if (overlay) {
+          overlay.classList.add('selected');
         }
       }
-    }
+    } else {
+      // Plain click: replace selection entirely
+      if (this.selectedRegions.size === 1 && this.selectedRegions.has(key)) return;
 
-    // Select new overlay in-place
-    this.selectedPageIdx = pageIdx;
-    this.selectedRegionIndex = index;
+      // Deselect all previous
+      this.clearSelectionDOM();
+      this.selectedRegions.clear();
 
-    const overlaysContainer = this.translatedScroll.querySelector(
-      `.editor-page-wrapper[data-page="${pageIdx}"] .editor-overlays`
-    );
-    if (overlaysContainer) {
-      const overlay = overlaysContainer.querySelector(
-        `.region-overlay[data-index="${index}"]`
-      ) as HTMLElement | null;
+      // Select new
+      this.selectedRegions.add(key);
+      const overlay = this.getOverlayElement(pageIdx, index);
       if (overlay) {
         overlay.classList.add('selected');
         this.appendResizeHandles(overlay);
       }
     }
 
-    this.deleteBtn.style.display = 'inline-block';
-  }
-
-  /** Deselect current region without full DOM rebuild. */
-  private deselectRegion() {
-    if (this.selectedRegionIndex === null || this.selectedPageIdx === null) return;
-
-    const overlaysContainer = this.translatedScroll.querySelector(
-      `.editor-page-wrapper[data-page="${this.selectedPageIdx}"] .editor-overlays`
-    );
-    if (overlaysContainer) {
-      const prevOverlay = overlaysContainer.querySelector(
-        `.region-overlay[data-index="${this.selectedRegionIndex}"]`
-      ) as HTMLElement | null;
-      if (prevOverlay) {
-        prevOverlay.classList.remove('selected');
-        this.removeResizeHandles(prevOverlay);
+    // Show resize handles only when exactly one region is selected
+    if (this.selectedRegions.size === 1) {
+      const onlyKey = this.selectedRegions.values().next().value!;
+      const { pageIdx: p, index: i } = this.parseRegionKey(onlyKey);
+      const overlay = this.getOverlayElement(p, i);
+      if (overlay && !overlay.querySelector('.resize-handle')) {
+        this.appendResizeHandles(overlay);
       }
     }
 
-    this.selectedRegionIndex = null;
-    this.selectedPageIdx = null;
-    this.deleteBtn.style.display = 'none';
+    this.updateDeleteButton();
+  }
+
+  /** Get overlay DOM element by page and index. */
+  private getOverlayElement(pageIdx: number, index: number): HTMLElement | null {
+    const container = this.translatedScroll.querySelector(
+      `.editor-page-wrapper[data-page="${pageIdx}"] .editor-overlays`
+    );
+    if (!container) return null;
+    return container.querySelector(`.region-overlay[data-index="${index}"]`) as HTMLElement | null;
+  }
+
+  /** Remove .selected class and resize handles from all currently selected overlays. */
+  private clearSelectionDOM() {
+    for (const key of this.selectedRegions) {
+      const { pageIdx, index } = this.parseRegionKey(key);
+      const overlay = this.getOverlayElement(pageIdx, index);
+      if (overlay) {
+        overlay.classList.remove('selected');
+        this.removeResizeHandles(overlay);
+      }
+    }
+  }
+
+  /** Remove resize handles from all selected overlays (used when transitioning to multi-select). */
+  private removeAllResizeHandles() {
+    for (const key of this.selectedRegions) {
+      const { pageIdx, index } = this.parseRegionKey(key);
+      const overlay = this.getOverlayElement(pageIdx, index);
+      if (overlay) this.removeResizeHandles(overlay);
+    }
+  }
+
+  /** Update delete button visibility and label based on selection count. */
+  private updateDeleteButton() {
+    const count = this.selectedRegions.size;
+    if (count === 0) {
+      this.deleteBtn.style.display = 'none';
+    } else {
+      this.deleteBtn.style.display = 'inline-block';
+      this.deleteBtn.textContent = count === 1 ? 'Delete Region' : `Delete ${count} Regions`;
+    }
+  }
+
+  /** Deselect all regions without full DOM rebuild. */
+  private deselectRegion() {
+    if (this.selectedRegions.size === 0) return;
+    this.clearSelectionDOM();
+    this.selectedRegions.clear();
+    this.updateDeleteButton();
   }
 
   private handleMouseMove(e: MouseEvent) {
     if (!this.isDragging && !this.isResizing) return;
-    if (!this.dragStartBBox || this.selectedPageIdx === null || this.selectedRegionIndex === null) return;
+    if (!this.dragStartBBox || this.dragPageIdx === null || this.dragRegionIndex === null) return;
 
     // Drag threshold: don't start moving until mouse has moved >= 3px
     if (!this.dragThresholdMet) {
@@ -633,12 +698,12 @@ export class RegionEditor {
       }
     }
 
-    const pageIdx = this.selectedPageIdx;
+    const pageIdx = this.dragPageIdx;
     const regions = this.pageRegions.get(pageIdx);
     const dims = this.pageDimensions.get(pageIdx);
-    if (!regions || !dims || this.selectedRegionIndex >= regions.length) return;
+    if (!regions || !dims || this.dragRegionIndex >= regions.length) return;
 
-    const region = regions[this.selectedRegionIndex];
+    const region = regions[this.dragRegionIndex];
     const { pdfWidth, pdfHeight } = dims;
 
     // Use cached scale factors (computed once at drag start)
@@ -708,19 +773,23 @@ export class RegionEditor {
   private handleMouseUp() {
     const wasDragging = this.dragThresholdMet;
     const activeEl = this.activeOverlayEl;
+    const dragPage = this.dragPageIdx;
+    const dragIndex = this.dragRegionIndex;
     this.isDragging = false;
     this.isResizing = false;
     this.dragStartBBox = null;
     this.dragThresholdMet = false;
     this.activeOverlayEl = null;
+    this.dragPageIdx = null;
+    this.dragRegionIndex = null;
 
     // Only auto-shrink the moved/resized overlay's text (not a full re-render)
-    if (wasDragging && activeEl && this.selectedPageIdx !== null && this.selectedRegionIndex !== null) {
+    if (wasDragging && activeEl && dragPage !== null && dragIndex !== null) {
       activeEl.classList.remove('dragging');
       const textDiv = activeEl.querySelector('.region-overlay-text') as HTMLElement | null;
       if (textDiv) {
-        const index = this.selectedRegionIndex;
-        const pageIdx = this.selectedPageIdx;
+        const index = dragIndex;
+        const pageIdx = dragPage;
         const regions = this.pageRegions.get(pageIdx);
         const dims = this.pageDimensions.get(pageIdx);
         if (regions && dims && index < regions.length) {
@@ -740,19 +809,36 @@ export class RegionEditor {
     }
   }
 
-  private deleteSelectedRegion() {
-    if (this.selectedRegionIndex === null || this.selectedPageIdx === null) return;
+  private deleteSelectedRegions() {
+    if (this.selectedRegions.size === 0) return;
 
-    const pageIdx = this.selectedPageIdx;
-    const regions = this.pageRegions.get(pageIdx);
-    if (!regions) return;
+    // Group selected keys by page
+    const byPage = new Map<number, number[]>();
+    for (const key of this.selectedRegions) {
+      const { pageIdx, index } = this.parseRegionKey(key);
+      if (!byPage.has(pageIdx)) byPage.set(pageIdx, []);
+      byPage.get(pageIdx)!.push(index);
+    }
 
-    regions.splice(this.selectedRegionIndex, 1);
-    this.selectedRegionIndex = null;
-    this.selectedPageIdx = null;
-    this.deleteBtn.style.display = 'none';
-    // Full re-render needed for this page because indices shift after splice
-    this.renderPageOverlays(pageIdx);
+    // Sort indices descending per page and splice from highest first (avoids index shift bugs)
+    const affectedPages: number[] = [];
+    for (const [pageIdx, indices] of byPage) {
+      const regions = this.pageRegions.get(pageIdx);
+      if (!regions) continue;
+      indices.sort((a, b) => b - a);
+      for (const idx of indices) {
+        regions.splice(idx, 1);
+      }
+      affectedPages.push(pageIdx);
+    }
+
+    this.selectedRegions.clear();
+    this.updateDeleteButton();
+
+    // Re-render affected pages (indices shifted after splice)
+    for (const pageIdx of affectedPages) {
+      this.renderPageOverlays(pageIdx);
+    }
   }
 
   private async exportPdf() {
