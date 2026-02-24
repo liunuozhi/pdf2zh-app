@@ -42,7 +42,7 @@ export class RegionEditor {
   private pageImages = new Map<number, { base64: string; width: number; height: number }>();
   private selectedRegions = new Set<string>(); // keys: "pageIdx:regionIndex"
   private onExportCallback: ((outputPath: string) => void) | null = null;
-  private onCloseCallback: (() => void) | null = null;
+  private onCloseCallback: ((updatedRegions?: [number, TranslatedRegion[]][]) => void) | null = null;
 
   // Lazy loading
   private loadedPages = new Set<number>();
@@ -229,7 +229,7 @@ export class RegionEditor {
   async open(
     data: TranslatePhaseResult,
     onExport: (outputPath: string) => void,
-    onClose: () => void
+    onClose: (updatedRegions?: [number, TranslatedRegion[]][]) => void
   ) {
     this.inputPath = data.inputPath;
     this.pageCount = data.pageCount;
@@ -263,24 +263,27 @@ export class RegionEditor {
     this.renderAllPages();
   }
 
-  close() {
+  /** Shared cleanup for close() and exportPdf(). */
+  private cleanupState() {
     this.container.style.display = 'none';
     document.getElementById('app')!.style.display = 'grid';
     this.selectedRegions.clear();
     this.pageImages.clear();
     this.loadedPages.clear();
 
-    // Disconnect IntersectionObserver
     if (this.intersectionObserver) {
       this.intersectionObserver.disconnect();
       this.intersectionObserver = null;
     }
 
-    // Clear dynamically created page elements
     this.originalScroll.innerHTML = '';
     this.translatedScroll.innerHTML = '';
+  }
 
-    if (this.onCloseCallback) this.onCloseCallback();
+  close() {
+    const updatedRegions = Array.from(this.pageRegions.entries());
+    this.cleanupState();
+    if (this.onCloseCallback) this.onCloseCallback(updatedRegions);
   }
 
   /**
@@ -852,8 +855,9 @@ export class RegionEditor {
       const result = await window.electronAPI.exportPdf(this.inputPath, serializedRegions);
 
       if (result.success && result.outputPath) {
-        this.container.style.display = 'none';
-        document.getElementById('app')!.style.display = 'grid';
+        const updatedRegions = Array.from(this.pageRegions.entries());
+        this.cleanupState();
+        if (this.onCloseCallback) this.onCloseCallback(updatedRegions);
         if (this.onExportCallback) this.onExportCallback(result.outputPath);
       } else {
         alert(`Export failed: ${result.error || 'Unknown error'}`);

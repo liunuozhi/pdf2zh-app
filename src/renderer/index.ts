@@ -37,7 +37,8 @@ interface FileEntry {
   path: string;
   name: string;
   selectedPages: number[] | null;
-  status: 'ready' | 'processing' | 'done' | 'failed';
+  status: 'ready' | 'processing' | 'translated' | 'done' | 'failed';
+  translationData?: any;
   outputPath?: string;
   error?: string;
   usage?: { inputTokens: number; outputTokens: number; totalCost: number };
@@ -114,8 +115,10 @@ function init() {
   });
 
   // Output buttons
+  document.getElementById('export-all-btn')!.addEventListener('click', () => {
+    exportAllFiles();
+  });
   document.getElementById('open-file-btn')!.addEventListener('click', () => {
-    // Open the first completed file's output
     const doneFile = files.find(f => f.status === 'done' && f.outputPath);
     if (doneFile?.outputPath) api.openFile(doneFile.outputPath);
   });
@@ -208,6 +211,7 @@ function renderFileList() {
     const statusConfig: Record<string, { text: string; color: string }> = {
       ready: { text: 'Ready', color: 'var(--text-secondary)' },
       processing: { text: 'Processing...', color: 'var(--primary)' },
+      translated: { text: 'Translated', color: '#ff9500' },
       done: { text: 'Done', color: '#34c759' },
       failed: { text: 'Failed', color: 'var(--danger)' },
     };
@@ -218,6 +222,22 @@ function renderFileList() {
       statusLabel.title = entry.error;
     }
     meta.appendChild(statusLabel);
+
+    // Per-file export button (for translated/done files, when not translating)
+    if (!isTranslating && entry.translationData) {
+      const exportBtn = document.createElement('button');
+      exportBtn.className = 'export-btn';
+      exportBtn.textContent = 'Export';
+      exportBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        exportBtn.textContent = 'Exporting...';
+        exportBtn.setAttribute('disabled', '');
+        await exportSingleFile(entry);
+        renderFileList();
+        updateOutputSection();
+      });
+      meta.appendChild(exportBtn);
+    }
 
     // Remove button (only when not translating)
     if (!isTranslating) {
@@ -243,11 +263,14 @@ function renderFileList() {
     item.appendChild(fileInfo);
     item.appendChild(meta);
 
-    // Click to set active
+    // Click to set active (and open editor if translated/done)
     item.addEventListener('click', () => {
       activeFileIndex = index;
       renderFileList();
       updateSelectPagesButton();
+      if (!isTranslating && entry.translationData) {
+        openEditorForFile(entry);
+      }
     });
 
     fileList.appendChild(item);
@@ -389,26 +412,9 @@ async function handleTranslateAll() {
     const result = await api.translatePdf(entry.path, entry.selectedPages ?? undefined, customPrompt);
 
     if (result.success && result.translationData) {
-      // Open the region editor and wait for user to export or cancel
-      const editorResult = await new Promise<{ exported: boolean; outputPath?: string }>((resolve) => {
-        regionEditor.open(
-          result.translationData,
-          (outputPath: string) => {
-            resolve({ exported: true, outputPath });
-          },
-          () => {
-            resolve({ exported: false });
-          }
-        );
-      });
-
-      if (editorResult.exported && editorResult.outputPath) {
-        entry.status = 'done';
-        entry.outputPath = editorResult.outputPath;
-        entry.usage = result.translationData.usage;
-      } else {
-        entry.status = 'ready'; // User cancelled — can re-translate
-      }
+      entry.translationData = result.translationData;
+      entry.usage = result.translationData.usage;
+      entry.status = 'translated';
     } else {
       entry.status = 'failed';
       entry.error = result.error || 'Unknown error';
@@ -424,11 +430,13 @@ async function handleTranslateAll() {
   const outputSection = document.getElementById('output-section')!;
   const outputMessage = document.getElementById('output-message')!;
 
+  const translatedCount = files.filter(f => f.status === 'translated').length;
   const doneCount = files.filter(f => f.status === 'done').length;
+  const successCount = translatedCount + doneCount;
   const failedCount = files.filter(f => f.status === 'failed').length;
 
-  if (doneCount > 0) {
-    let msg = `Translation complete! ${doneCount} file(s) translated.`;
+  if (successCount > 0) {
+    let msg = `Translation complete! ${successCount} file(s) translated.`;
     if (failedCount > 0) {
       msg += ` ${failedCount} file(s) failed.`;
     }
@@ -449,21 +457,77 @@ async function handleTranslateAll() {
       }
     }
     outputMessage.textContent = msg;
-    document.getElementById('open-file-btn')!.style.display = 'inline-block';
-    document.getElementById('open-folder-btn')!.style.display = 'inline-block';
   } else {
     const errors = files
       .filter(f => f.status === 'failed' && f.error)
       .map(f => `${f.name}: ${f.error}`);
     outputMessage.textContent = `All files failed to translate.\n${errors.join('\n')}`;
-    document.getElementById('open-file-btn')!.style.display = 'none';
-    document.getElementById('open-folder-btn')!.style.display = 'none';
   }
+
+  updateOutputSection();
 
   outputSection.style.display = 'block';
 
   // Re-show translate button for re-translation
   document.getElementById('translate-actions')!.style.display = 'flex';
+}
+
+async function exportSingleFile(entry: FileEntry): Promise<boolean> {
+  if (!entry.translationData) return false;
+  const result = await window.electronAPI.exportPdf(
+    entry.translationData.inputPath,
+    entry.translationData.pageRegions
+  );
+  if (result.success && result.outputPath) {
+    entry.status = 'done';
+    entry.outputPath = result.outputPath;
+    return true;
+  }
+  return false;
+}
+
+async function exportAllFiles() {
+  const toExport = files.filter(f => f.translationData && f.status !== 'done');
+  if (toExport.length === 0) return;
+
+  const btn = document.getElementById('export-all-btn')!;
+  btn.textContent = 'Exporting...';
+  btn.setAttribute('disabled', '');
+
+  for (const entry of toExport) {
+    await exportSingleFile(entry);
+  }
+
+  btn.removeAttribute('disabled');
+  btn.textContent = 'Export All';
+  renderFileList();
+  updateOutputSection();
+}
+
+function updateOutputSection() {
+  const translatedCount = files.filter(f => f.status === 'translated').length;
+  const doneCount = files.filter(f => f.status === 'done').length;
+  document.getElementById('open-file-btn')!.style.display = doneCount > 0 ? 'inline-block' : 'none';
+  document.getElementById('open-folder-btn')!.style.display = doneCount > 0 ? 'inline-block' : 'none';
+  document.getElementById('export-all-btn')!.style.display = translatedCount > 0 ? 'inline-block' : 'none';
+}
+
+function openEditorForFile(entry: FileEntry) {
+  regionEditor.open(
+    entry.translationData,
+    (outputPath: string) => {
+      entry.status = 'done';
+      entry.outputPath = outputPath;
+      renderFileList();
+      updateOutputSection();
+    },
+    (updatedRegions?: [number, any[]][]) => {
+      if (updatedRegions && entry.translationData) {
+        entry.translationData.pageRegions = updatedRegions;
+      }
+      renderFileList();
+    }
+  );
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -468,6 +468,29 @@ main {
   font-weight: 500;
 }
 
+.file-item .export-btn {
+  background: none;
+  border: 1px solid #ff9500;
+  color: #ff9500;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.file-item .export-btn:hover {
+  background: #ff9500;
+  color: white;
+}
+
+.file-item .export-btn[disabled] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .file-item .remove-btn {
   background: none;
   border: none;
