@@ -73,8 +73,10 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     : Array.from({ length: totalPages }, (_, i) => i + 1);
   const processCount = pagesToProcess.length;
 
-  // Process each page
+  // Phase A: Prepare all pages (render, detect, extract, match)
   const pageRegions = new Map<number, TranslatedRegion[]>();
+  const allRegionEntries: { pageNum: number; regionIndex: number; region: any }[] = [];
+  const pageRegionLists = new Map<number, any[]>();
 
   for (let idx = 0; idx < processCount; idx++) {
     const pageNum = pagesToProcess[idx];
@@ -82,7 +84,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       throw new Error('Translation cancelled');
     }
 
-    const basePercent = 10 + (idx / processCount) * 85;
+    const basePercent = 10 + (idx / processCount) * 50;
 
     // Stage 1: Render page to image
     onProgress({
@@ -100,7 +102,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       stage: 'Detecting layout...',
       currentPage: idx + 1,
       totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.2,
+      percent: basePercent + (50 / processCount) * 0.33,
     });
     const layoutBoxes = await detectLayout(
       rendered.rgbBuffer,
@@ -113,7 +115,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       stage: 'Extracting text...',
       currentPage: idx + 1,
       totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.4,
+      percent: basePercent + (50 / processCount) * 0.66,
     });
     const textBlocks = await extractText(page);
 
@@ -125,29 +127,44 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       rendered.scale
     );
 
-    if (regions.length === 0) {
-      page.cleanup();
-      continue;
-    }
+    page.cleanup();
 
-    // Stage 5: Translation
+    if (regions.length === 0) continue;
+
+    pageRegionLists.set(pageNum, regions);
+    for (let ri = 0; ri < regions.length; ri++) {
+      allRegionEntries.push({ pageNum, regionIndex: ri, region: regions[ri] });
+    }
+  }
+
+  // Phase B: Translate ALL regions across all pages in a single batch
+  if (abortSignal?.aborted) {
+    throw new Error('Translation cancelled');
+  }
+
+  if (allRegionEntries.length > 0) {
     onProgress({
       stage: 'Translating...',
-      currentPage: idx + 1,
+      currentPage: processCount,
       totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.6,
+      percent: 60,
     });
 
-    const texts = regions.map((r) => r.fullText);
-    const translations = await translator.translateBatch(texts, fromLang, toLang);
+    const allTexts = allRegionEntries.map((e) => e.region.fullText);
+    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang);
 
-    const translatedRegions: TranslatedRegion[] = regions.map((region, i) => ({
-      ...region,
-      translatedText: translations[i],
-    }));
-
-    pageRegions.set(pageNum - 1, translatedRegions);
-    page.cleanup();
+    for (let i = 0; i < allRegionEntries.length; i++) {
+      const { pageNum, regionIndex } = allRegionEntries[i];
+      const regions = pageRegionLists.get(pageNum)!;
+      const translatedRegions = pageRegions.get(pageNum - 1) || [];
+      if (translatedRegions.length === 0) {
+        pageRegions.set(pageNum - 1, translatedRegions);
+      }
+      translatedRegions.push({
+        ...regions[regionIndex],
+        translatedText: allTranslations[i],
+      });
+    }
   }
 
   // Stage 6: Write output PDF
@@ -219,9 +236,11 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
     : Array.from({ length: totalPages }, (_, i) => i + 1);
   const processCount = pagesToProcess.length;
 
-  // Process each page
+  // Phase A: Prepare all pages (render, detect, extract, match)
   const pageRegions = new Map<number, TranslatedRegion[]>();
   const pageDimensions: { pageIndex: number; pdfWidth: number; pdfHeight: number }[] = [];
+  const allRegionEntries: { pageNum: number; regionIndex: number; region: any }[] = [];
+  const pageRegionLists = new Map<number, any[]>();
 
   for (let idx = 0; idx < processCount; idx++) {
     const pageNum = pagesToProcess[idx];
@@ -229,7 +248,7 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
       throw new Error('Translation cancelled');
     }
 
-    const basePercent = 10 + (idx / processCount) * 85;
+    const basePercent = 10 + (idx / processCount) * 50;
 
     // Stage 1: Render page to image
     onProgress({
@@ -254,7 +273,7 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
       stage: 'Detecting layout...',
       currentPage: idx + 1,
       totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.2,
+      percent: basePercent + (50 / processCount) * 0.33,
     });
     const layoutBoxes = await detectLayout(
       rendered.rgbBuffer,
@@ -267,7 +286,7 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
       stage: 'Extracting text...',
       currentPage: idx + 1,
       totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.4,
+      percent: basePercent + (50 / processCount) * 0.66,
     });
     const textBlocks = await extractText(page);
 
@@ -279,33 +298,44 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
       rendered.scale
     );
 
-    if (regions.length === 0) {
-      page.cleanup();
-      continue;
-    }
-
-    // Stage 5: Translation
-    onProgress({
-      stage: 'Translating...',
-      currentPage: idx + 1,
-      totalPages: processCount,
-      percent: basePercent + (85 / processCount) * 0.6,
-    });
-
-    const texts = regions.map((r) => r.fullText);
-    const translations = await translator.translateBatch(texts, fromLang, toLang);
-
-    const translatedRegions: TranslatedRegion[] = regions.map((region, i) => ({
-      ...region,
-      translatedText: translations[i],
-    }));
-
-    pageRegions.set(pageNum - 1, translatedRegions);
     page.cleanup();
+
+    if (regions.length === 0) continue;
+
+    pageRegionLists.set(pageNum, regions);
+    for (let ri = 0; ri < regions.length; ri++) {
+      allRegionEntries.push({ pageNum, regionIndex: ri, region: regions[ri] });
+    }
   }
 
+  // Phase B: Translate ALL regions across all pages in a single batch
   if (abortSignal?.aborted) {
     throw new Error('Translation cancelled');
+  }
+
+  if (allRegionEntries.length > 0) {
+    onProgress({
+      stage: 'Translating...',
+      currentPage: processCount,
+      totalPages: processCount,
+      percent: 60,
+    });
+
+    const allTexts = allRegionEntries.map((e) => e.region.fullText);
+    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang);
+
+    for (let i = 0; i < allRegionEntries.length; i++) {
+      const { pageNum, regionIndex } = allRegionEntries[i];
+      const regions = pageRegionLists.get(pageNum)!;
+      const translatedRegions = pageRegions.get(pageNum - 1) || [];
+      if (translatedRegions.length === 0) {
+        pageRegions.set(pageNum - 1, translatedRegions);
+      }
+      translatedRegions.push({
+        ...regions[regionIndex],
+        translatedText: allTranslations[i],
+      });
+    }
   }
 
   onProgress({

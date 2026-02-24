@@ -11,8 +11,6 @@ import { Path2D, applyPath2DToCanvasRenderingContext } from 'path2d';
 import { createCanvas, CanvasRenderingContext2D, type Canvas } from 'canvas';
 applyPath2DToCanvasRenderingContext(CanvasRenderingContext2D as any);
 
-import sharp from 'sharp';
-
 const TARGET_SIZE = 1024;
 
 export interface RenderedPage {
@@ -74,12 +72,17 @@ export async function renderPage(page: any): Promise<RenderedPage> {
 
   await page.render(renderContext).promise;
 
-  // Convert to raw RGB buffer using sharp
-  const pngBuffer = canvas.toBuffer('image/png');
-  const rgbBuffer = await sharp(pngBuffer)
-    .removeAlpha()
-    .raw()
-    .toBuffer();
+  // Convert to raw RGB buffer directly (skip PNG encode/decode round-trip)
+  const bgraBuffer = canvas.toBuffer('raw');
+  const pixelCount = width * height;
+  const rgbBuffer = Buffer.allocUnsafe(pixelCount * 3);
+  for (let i = 0; i < pixelCount; i++) {
+    const src = i * 4; // BGRA
+    const dst = i * 3; // RGB
+    rgbBuffer[dst] = bgraBuffer[src + 2];     // R ← B offset
+    rgbBuffer[dst + 1] = bgraBuffer[src + 1]; // G ← G offset
+    rgbBuffer[dst + 2] = bgraBuffer[src];     // B ← R offset
+  }
 
   return { rgbBuffer, width, height, scale };
 }
