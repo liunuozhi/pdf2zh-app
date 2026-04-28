@@ -62,6 +62,12 @@ export interface TranslatePhaseResult {
   pageRegions: [number, TranslatedRegion[]][];  // serialized Map entries (pageIndex → regions)
   pageDimensions: { pageIndex: number; pdfWidth: number; pdfHeight: number }[];
   usage?: { inputTokens: number; outputTokens: number; totalCost: number };
+  /** True if the user cancelled mid-translate; some regions hold original text */
+  cancelled?: boolean;
+  /** Number of regions successfully translated (vs left as original) */
+  translatedCount?: number;
+  /** Total number of regions we attempted */
+  totalRegionCount?: number;
 }
 
 /** Progress event sent from main to renderer */

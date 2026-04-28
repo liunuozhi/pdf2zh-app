@@ -9,9 +9,14 @@ export interface TranslatorUsage {
   totalCost: number;
 }
 
+export interface BatchOptions {
+  abortSignal?: { aborted: boolean };
+  onProgress?: (completed: number, total: number, failed: number) => void;
+}
+
 export interface Translator {
   translate(text: string, from: string, to: string): Promise<string>;
-  translateBatch(texts: string[], from: string, to: string): Promise<string[]>;
+  translateBatch(texts: string[], from: string, to: string, options?: BatchOptions): Promise<string[]>;
   getUsage?(): TranslatorUsage;
 }
 

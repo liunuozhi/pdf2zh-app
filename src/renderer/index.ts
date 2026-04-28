@@ -38,7 +38,7 @@ interface FileEntry {
   path: string;
   name: string;
   selectedPages: number[] | null;
-  status: 'ready' | 'processing' | 'translated' | 'done' | 'failed';
+  status: 'ready' | 'processing' | 'translated' | 'cancelled' | 'done' | 'failed';
   translationData?: any;
   outputPath?: string;
   error?: string;
@@ -213,6 +213,7 @@ function renderFileList() {
       ready: { text: 'Ready', color: 'var(--text-secondary)' },
       processing: { text: 'Processing...', color: 'var(--primary)' },
       translated: { text: 'Translated', color: '#ff9500' },
+      cancelled: { text: 'Cancelled (partial)', color: '#ff9500' },
       done: { text: 'Done', color: '#34c759' },
       failed: { text: 'Failed', color: 'var(--danger)' },
     };
@@ -415,16 +416,20 @@ async function handleTranslateAll() {
     if (result.success && result.translationData) {
       entry.translationData = result.translationData;
       entry.usage = result.translationData.usage;
-      entry.status = 'translated';
+      entry.status = result.translationData.cancelled ? 'cancelled' : 'translated';
     } else {
       entry.status = 'failed';
       entry.error = result.error || 'Unknown error';
     }
 
     renderFileList();
+
+    // Stop processing further files if user cancelled
+    if (result.translationData?.cancelled) break;
   }
 
   document.getElementById('cancel-btn')!.style.display = 'none';
+  document.getElementById('progress-section')!.style.display = 'none';
   isTranslating = false;
 
   // Show output section with summary
@@ -432,14 +437,25 @@ async function handleTranslateAll() {
   const outputMessage = document.getElementById('output-message')!;
 
   const translatedCount = files.filter(f => f.status === 'translated').length;
+  const cancelledCount = files.filter(f => f.status === 'cancelled').length;
   const doneCount = files.filter(f => f.status === 'done').length;
-  const successCount = translatedCount + doneCount;
+  const successCount = translatedCount + cancelledCount + doneCount;
   const failedCount = files.filter(f => f.status === 'failed').length;
 
   if (successCount > 0) {
-    let msg = `Translation complete! ${successCount} file(s) translated.`;
+    let msg = cancelledCount > 0
+      ? `Cancelled. ${successCount} file(s) have partial translations.`
+      : `Translation complete! ${successCount} file(s) translated.`;
     if (failedCount > 0) {
       msg += ` ${failedCount} file(s) failed.`;
+    }
+    // Per-file partial counts (only when cancelled)
+    const partialFiles = files.filter(f => f.status === 'cancelled' && f.translationData);
+    for (const f of partialFiles) {
+      const td = f.translationData;
+      if (typeof td.translatedCount === 'number' && typeof td.totalRegionCount === 'number') {
+        msg += `\n${f.name}: ${td.translatedCount}/${td.totalRegionCount} regions translated`;
+      }
     }
     // Show token usage for all completed files
     const totalUsage = files
@@ -506,11 +522,11 @@ async function exportAllFiles() {
 }
 
 function updateOutputSection() {
-  const translatedCount = files.filter(f => f.status === 'translated').length;
+  const exportableCount = files.filter(f => f.status === 'translated' || f.status === 'cancelled').length;
   const doneCount = files.filter(f => f.status === 'done').length;
   document.getElementById('open-file-btn')!.style.display = doneCount > 0 ? 'inline-block' : 'none';
   document.getElementById('open-folder-btn')!.style.display = doneCount > 0 ? 'inline-block' : 'none';
-  document.getElementById('export-all-btn')!.style.display = translatedCount > 0 ? 'inline-block' : 'none';
+  document.getElementById('export-all-btn')!.style.display = exportableCount > 0 ? 'inline-block' : 'none';
 }
 
 function openEditorForFile(entry: FileEntry) {

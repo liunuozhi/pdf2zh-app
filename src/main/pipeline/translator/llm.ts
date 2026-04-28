@@ -2,7 +2,7 @@
  * LLM-based translator using pi-ai's unified API.
  */
 import { getModel, completeSimple } from '@mariozechner/pi-ai';
-import { Translator } from './index';
+import { Translator, BatchOptions } from './index';
 import { AppSettings } from '../types';
 
 const CONCURRENCY_LIMIT = 5;
@@ -112,17 +112,30 @@ export class LLMTranslator implements Translator {
   async translateBatch(
     texts: string[],
     from: string,
-    to: string
+    to: string,
+    options?: BatchOptions
   ): Promise<string[]> {
     this.resetUsage();
     const results: string[] = new Array(texts.length);
     const queue = texts.map((text, index) => ({ text, index }));
     let pos = 0;
+    let completed = 0;
+    let failed = 0;
 
     const worker = async () => {
       while (pos < queue.length) {
+        // Cancel: stop dispatching but don't throw — caller fills remaining slots with originals
+        if (options?.abortSignal?.aborted) return;
         const item = queue[pos++];
-        results[item.index] = await this.translate(item.text, from, to);
+        try {
+          results[item.index] = await this.translate(item.text, from, to);
+        } catch {
+          // Per-region failure: keep original text so the rest of the job survives
+          results[item.index] = item.text;
+          failed++;
+        }
+        completed++;
+        options?.onProgress?.(completed, queue.length, failed);
       }
     };
 
@@ -131,6 +144,11 @@ export class LLMTranslator implements Translator {
       workers.push(worker());
     }
     await Promise.all(workers);
+
+    // Backfill any items the workers didn't reach (cancellation) with originals
+    for (let i = 0; i < texts.length; i++) {
+      if (results[i] === undefined) results[i] = texts[i];
+    }
 
     return results;
   }

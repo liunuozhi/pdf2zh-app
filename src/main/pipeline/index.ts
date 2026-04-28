@@ -144,14 +144,27 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
 
   if (allRegionEntries.length > 0) {
     onProgress({
-      stage: 'Translating...',
+      stage: `Translating... (0/${allRegionEntries.length})`,
       currentPage: processCount,
       totalPages: processCount,
       percent: 60,
     });
 
     const allTexts = allRegionEntries.map((e) => e.region.fullText);
-    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang);
+    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang, {
+      abortSignal,
+      onProgress: (completed, total, failed) => {
+        const stage = failed > 0
+          ? `Translating... (${completed}/${total}, ${failed} failed)`
+          : `Translating... (${completed}/${total})`;
+        onProgress({
+          stage,
+          currentPage: processCount,
+          totalPages: processCount,
+          percent: 60 + (completed / total) * 30,
+        });
+      },
+    });
 
     for (let i = 0; i < allRegionEntries.length; i++) {
       const { pageNum, regionIndex } = allRegionEntries[i];
@@ -244,9 +257,8 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
 
   for (let idx = 0; idx < processCount; idx++) {
     const pageNum = pagesToProcess[idx];
-    if (abortSignal?.aborted) {
-      throw new Error('Translation cancelled');
-    }
+    // Cancel during phase A: stop processing more pages but keep what we have
+    if (abortSignal?.aborted) break;
 
     const basePercent = 10 + (idx / processCount) * 50;
 
@@ -308,21 +320,34 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
     }
   }
 
-  // Phase B: Translate ALL regions across all pages in a single batch
-  if (abortSignal?.aborted) {
-    throw new Error('Translation cancelled');
-  }
-
-  if (allRegionEntries.length > 0) {
+  // Phase B: Translate ALL regions across all pages in a single batch.
+  // If the user cancelled during phase A, skip this entirely — translateBatch
+  // would just backfill everything with originals anyway.
+  let translatedCount = 0;
+  if (allRegionEntries.length > 0 && !abortSignal?.aborted) {
     onProgress({
-      stage: 'Translating...',
+      stage: `Translating... (0/${allRegionEntries.length})`,
       currentPage: processCount,
       totalPages: processCount,
       percent: 60,
     });
 
     const allTexts = allRegionEntries.map((e) => e.region.fullText);
-    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang);
+    const allTranslations = await translator.translateBatch(allTexts, fromLang, toLang, {
+      abortSignal,
+      onProgress: (completed, total, failed) => {
+        translatedCount = completed - failed;
+        const stage = failed > 0
+          ? `Translating... (${completed}/${total}, ${failed} failed)`
+          : `Translating... (${completed}/${total})`;
+        onProgress({
+          stage,
+          currentPage: processCount,
+          totalPages: processCount,
+          percent: 60 + (completed / total) * 35,
+        });
+      },
+    });
 
     for (let i = 0; i < allRegionEntries.length; i++) {
       const { pageNum, regionIndex } = allRegionEntries[i];
@@ -338,8 +363,9 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
     }
   }
 
+  const cancelled = !!abortSignal?.aborted;
   onProgress({
-    stage: 'Translation complete!',
+    stage: cancelled ? 'Cancelled' : 'Translation complete!',
     currentPage: processCount,
     totalPages: processCount,
     percent: 100,
@@ -354,5 +380,8 @@ export async function runTranslatePhase(options: TranslatePhaseOptions): Promise
     pageRegions: Array.from(pageRegions.entries()),
     pageDimensions,
     usage: translator.getUsage?.(),
+    cancelled,
+    translatedCount,
+    totalRegionCount: allRegionEntries.length,
   };
 }
