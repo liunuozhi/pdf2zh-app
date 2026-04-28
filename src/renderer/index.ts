@@ -26,6 +26,7 @@ declare global {
       onProgress: (callback: (event: any, data: any) => void) => () => void;
       getPathForFile: (file: File) => string;
       listModels: (provider: string) => Promise<string[]>;
+      testLlmConnection: (settings: any) => Promise<{ ok: boolean; message: string; latencyMs?: number }>;
       getAppVersion: () => Promise<string>;
       checkForUpdates: () => Promise<{ currentVersion: string; latestVersion: string; isOutdated: boolean; releaseUrl: string }>;
       openExternalUrl: (url: string) => Promise<void>;

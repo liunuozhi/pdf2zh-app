@@ -90,7 +90,14 @@
               <option value="anthropic">Anthropic</option>
               <option value="google">Google</option>
               <option value="mistral">Mistral</option>
-              <option value="ollama">Ollama</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="xai">xAI</option>
+              <option value="groq">Groq</option>
+              <option value="cerebras">Cerebras</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="zai">Z.ai</option>
+              <option value="fireworks">Fireworks</option>
+              <option value="huggingface">HuggingFace</option>
               <option value="custom">Custom</option>
             </select>
           </div>
@@ -100,16 +107,28 @@
             <select id="llm-model">
               <option value="">Select a model...</option>
             </select>
+            <input type="text" id="llm-model-custom" placeholder="model-id" style="display:none;" />
           </div>
 
           <div class="form-group">
             <label for="llm-api-token">API Token</label>
-            <input type="password" id="llm-api-token" placeholder="sk-..." />
+            <div class="input-with-toggle">
+              <input type="password" id="llm-api-token" placeholder="sk-..." />
+              <button type="button" id="api-token-toggle" class="input-toggle-btn" aria-label="Show API token" title="Show API token">
+                <svg class="icon-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s4-8 10-8 10 8 10 8-4 8-10 8S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="icon-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c6 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s4 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="form-group" id="llm-base-url-group">
             <label for="llm-base-url">Base URL (optional)</label>
             <input type="text" id="llm-base-url" placeholder="https://api.openai.com/v1" />
+          </div>
+
+          <div class="form-group">
+            <button id="test-conn-btn" type="button" class="btn btn-sm">Test Connection</button>
+            <span id="test-conn-status" class="test-conn-status"></span>
           </div>
 
         </div>

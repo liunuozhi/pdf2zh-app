@@ -9,6 +9,35 @@ const CONCURRENCY_LIMIT = 5;
 
 const DEFAULT_SYSTEM_PROMPT = `You are a professional translator. Translate the following text accurately and naturally. Output only the translated text, nothing else. Preserve any formatting, numbers, and special characters.`;
 
+/**
+ * Resolve a pi-ai Model object. For known providers, looks up the registry
+ * and optionally overrides baseUrl. For provider=`custom`, synthesizes a
+ * minimal Model bound to the user's baseUrl (treated as OpenAI-compatible).
+ */
+export function resolveModel(provider: string, modelId: string, customBaseUrl?: string) {
+  if (provider === 'custom') {
+    if (!customBaseUrl) throw new Error('Custom provider requires a Base URL.');
+    if (!modelId) throw new Error('Custom provider requires a model ID.');
+    return {
+      id: modelId,
+      name: modelId,
+      api: 'openai-completions',
+      provider: 'custom',
+      baseUrl: customBaseUrl,
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192,
+    } as any;
+  }
+  const baseModel = getModel(provider as any, modelId as any);
+  if (!baseModel) {
+    throw new Error(`Model "${modelId}" not found for provider "${provider}". Please select a valid model in Settings.`);
+  }
+  return customBaseUrl ? { ...baseModel, baseUrl: customBaseUrl } : baseModel;
+}
+
 export class LLMTranslator implements Translator {
   private settings: AppSettings;
   private customPrompt?: string;
@@ -52,10 +81,7 @@ export class LLMTranslator implements Translator {
 
     const provider = this.settings.llmProvider || 'openai';
     const modelId = this.settings.llmModel || 'gpt-4o-mini';
-    const model = getModel(provider as any, modelId as any);
-    if (!model) {
-      throw new Error(`Model "${modelId}" not found for provider "${provider}". Please select a valid model in Settings.`);
-    }
+    const model = resolveModel(provider, modelId, this.settings.llmBaseUrl?.trim());
 
     const systemPrompt = this.customPrompt || DEFAULT_SYSTEM_PROMPT;
 

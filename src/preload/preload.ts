@@ -17,6 +17,7 @@ export interface ElectronAPI {
   onProgress: (callback: (event: any, data: any) => void) => () => void;
   getPathForFile: (file: File) => string;
   listModels: (provider: string) => Promise<string[]>;
+  testLlmConnection: (settings: any) => Promise<{ ok: boolean; message: string; latencyMs?: number }>;
   getAppVersion: () => Promise<string>;
   checkForUpdates: () => Promise<{ currentVersion: string; latestVersion: string; isOutdated: boolean; releaseUrl: string }>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -41,6 +42,7 @@ const api: ElectronAPI = {
   },
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   listModels: (provider: string) => ipcRenderer.invoke('list-models', provider),
+  testLlmConnection: (settings) => ipcRenderer.invoke('test-llm-connection', settings),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),

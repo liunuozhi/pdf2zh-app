@@ -5,7 +5,8 @@ import { ipcMain, dialog, shell, BrowserWindow, app, net } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { getModels } from '@mariozechner/pi-ai';
+import { getModels, completeSimple } from '@mariozechner/pi-ai';
+import { resolveModel } from './pipeline/translator/llm';
 import { runPipeline, runTranslatePhase, getAssetPath } from './pipeline';
 import { AppSettings, DEFAULT_SETTINGS, TranslatedRegion } from './pipeline/types';
 import { NodeCanvasFactory, renderPageToBase64Png } from './pipeline/page-renderer';
@@ -51,6 +52,41 @@ export function registerIpcHandlers(): void {
       return models.map((m: any) => m.id);
     } catch {
       return [];
+    }
+  });
+
+  // Test LLM connection: small ping call, returns ok/error + latency
+  ipcMain.handle('test-llm-connection', async (_event, settings: AppSettings) => {
+    const provider = settings.llmProvider || 'openai';
+    const modelId = settings.llmModel;
+    if (!modelId) return { ok: false, message: 'No model selected' };
+
+    let model: any;
+    try {
+      model = resolveModel(provider, modelId, settings.llmBaseUrl?.trim());
+    } catch (err: any) {
+      return { ok: false, message: err?.message || String(err) };
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const start = Date.now();
+    try {
+      await completeSimple(model, {
+        systemPrompt: 'Reply with the single word: OK',
+        messages: [{ role: 'user' as const, content: 'ping', timestamp: Date.now() }],
+      }, {
+        apiKey: settings.llmApiToken || undefined,
+        temperature: 0,
+        maxTokens: 8,
+        signal: controller.signal,
+      });
+      return { ok: true, message: 'Connected', latencyMs: Date.now() - start };
+    } catch (err: any) {
+      const msg = controller.signal.aborted ? 'Timed out after 15s' : (err?.message || String(err));
+      return { ok: false, message: msg };
+    } finally {
+      clearTimeout(timeout);
     }
   });
 

@@ -43,7 +43,7 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.48.0",
+    "@mariozechner/pi-ai": "^0.70.5",
     "@pdf-lib/fontkit": "^1.1.1",
     "@vitalets/google-translate-api": "^9.2.1",
     "canvas": "^3.2.1",
