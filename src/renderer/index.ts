@@ -4,7 +4,6 @@
 import { initDropZone } from './components/drop-zone';
 import { initProgressBar } from './components/progress-bar';
 import { initSettingsPanel } from './components/settings-panel';
-import { RegionEditor } from './components/region-editor';
 
 declare global {
   interface Window {
@@ -30,6 +29,12 @@ declare global {
       getAppVersion: () => Promise<string>;
       checkForUpdates: () => Promise<{ currentVersion: string; latestVersion: string; isOutdated: boolean; releaseUrl: string }>;
       openExternalUrl: (url: string) => Promise<void>;
+      openViewer: (payload: { fileId: string; translationData: any }) => Promise<number>;
+      viewerGetData: () => Promise<{ fileId: string; translationData: any } | null>;
+      viewerNotifyExport: (fileId: string, outputPath: string) => void;
+      viewerNotifyClose: (fileId: string, updatedRegions: [number, any[]][]) => void;
+      onViewerExportDone: (callback: (event: any, data: { fileId: string; outputPath: string }) => void) => () => void;
+      onViewerClosed: (callback: (event: any, data: { fileId: string; updatedRegions: [number, any[]][] }) => void) => () => void;
     };
   }
 }
@@ -48,7 +53,6 @@ interface FileEntry {
 let files: FileEntry[] = [];
 let activeFileIndex = 0;
 let isTranslating = false;
-let regionEditor: RegionEditor;
 
 function init() {
   const api = window.electronAPI;
@@ -57,7 +61,24 @@ function init() {
   initDropZone(handleFilesSelect);
   initProgressBar();
   initSettingsPanel(api);
-  regionEditor = new RegionEditor();
+
+  // Listen for viewer-window events
+  api.onViewerExportDone((_event, { fileId, outputPath }) => {
+    const entry = files.find((f) => f.path === fileId);
+    if (!entry) return;
+    entry.status = 'done';
+    entry.outputPath = outputPath;
+    renderFileList();
+    updateOutputSection();
+  });
+
+  api.onViewerClosed((_event, { fileId, updatedRegions }) => {
+    const entry = files.find((f) => f.path === fileId);
+    if (entry && entry.translationData && updatedRegions) {
+      entry.translationData.pageRegions = updatedRegions;
+    }
+    renderFileList();
+  });
 
   // Progress listener
   api.onProgress((_event, data) => {
@@ -530,21 +551,11 @@ function updateOutputSection() {
 }
 
 function openEditorForFile(entry: FileEntry) {
-  regionEditor.open(
-    entry.translationData,
-    (outputPath: string) => {
-      entry.status = 'done';
-      entry.outputPath = outputPath;
-      renderFileList();
-      updateOutputSection();
-    },
-    (updatedRegions?: [number, any[]][]) => {
-      if (updatedRegions && entry.translationData) {
-        entry.translationData.pageRegions = updatedRegions;
-      }
-      renderFileList();
-    }
-  );
+  if (!entry.translationData) return;
+  window.electronAPI.openViewer({
+    fileId: entry.path,
+    translationData: entry.translationData,
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

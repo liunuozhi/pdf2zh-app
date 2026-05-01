@@ -21,6 +21,13 @@ export interface ElectronAPI {
   getAppVersion: () => Promise<string>;
   checkForUpdates: () => Promise<{ currentVersion: string; latestVersion: string; isOutdated: boolean; releaseUrl: string }>;
   openExternalUrl: (url: string) => Promise<void>;
+  // Viewer-window IPC
+  openViewer: (payload: { fileId: string; translationData: any }) => Promise<number>;
+  viewerGetData: () => Promise<{ fileId: string; translationData: any } | null>;
+  viewerNotifyExport: (fileId: string, outputPath: string) => void;
+  viewerNotifyClose: (fileId: string, updatedRegions: [number, any[]][]) => void;
+  onViewerExportDone: (callback: (event: any, data: { fileId: string; outputPath: string }) => void) => () => void;
+  onViewerClosed: (callback: (event: any, data: { fileId: string; updatedRegions: [number, any[]][] }) => void) => () => void;
 }
 
 const api: ElectronAPI = {
@@ -46,6 +53,22 @@ const api: ElectronAPI = {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
+  openViewer: (payload) => ipcRenderer.invoke('open-viewer-window', payload),
+  viewerGetData: () => ipcRenderer.invoke('viewer-get-data'),
+  viewerNotifyExport: (fileId, outputPath) => ipcRenderer.send('viewer-notify-export', fileId, outputPath),
+  viewerNotifyClose: (fileId, updatedRegions) => ipcRenderer.send('viewer-notify-close', fileId, updatedRegions),
+  onViewerExportDone: (callback) => {
+    ipcRenderer.on('viewer-export-done', callback);
+    return () => {
+      ipcRenderer.removeListener('viewer-export-done', callback);
+    };
+  },
+  onViewerClosed: (callback) => {
+    ipcRenderer.on('viewer-closed', callback);
+    return () => {
+      ipcRenderer.removeListener('viewer-closed', callback);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);

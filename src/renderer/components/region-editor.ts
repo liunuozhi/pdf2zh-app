@@ -255,9 +255,8 @@ export class RegionEditor {
     // Set filename
     const filename = data.inputPath.split('/').pop() || data.inputPath.split('\\').pop() || data.inputPath;
     document.getElementById('editor-filename')!.textContent = filename;
+    document.title = filename;
 
-    // Show editor
-    document.getElementById('app')!.style.display = 'none';
     this.container.style.display = 'flex';
 
     this.renderAllPages();
@@ -266,7 +265,6 @@ export class RegionEditor {
   /** Shared cleanup for close() and exportPdf(). */
   private cleanupState() {
     this.container.style.display = 'none';
-    document.getElementById('app')!.style.display = 'grid';
     this.selectedRegions.clear();
     this.pageImages.clear();
     this.loadedPages.clear();

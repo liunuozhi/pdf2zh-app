@@ -12,6 +12,7 @@ import { AppSettings, DEFAULT_SETTINGS, TranslatedRegion } from './pipeline/type
 import { NodeCanvasFactory, renderPageToBase64Png } from './pipeline/page-renderer';
 import { writePdf } from './pipeline/pdf-writer';
 import { createCanvas } from 'canvas';
+import { createViewerWindow, getMainWindow, getViewerPayload } from './index';
 
 function compareVersions(a: string, b: string): number {
   const pa = a.replace(/^v/, '').split('.').map(Number);
@@ -274,5 +275,35 @@ export function registerIpcHandlers(): void {
   // Open external URL in browser
   ipcMain.handle('open-external-url', (_event, url: string) => {
     return shell.openExternal(url);
+  });
+
+  // Open the result viewer in a separate BrowserWindow.
+  // The payload is stashed by window id; the viewer renderer fetches it via 'viewer-get-data'.
+  ipcMain.handle('open-viewer-window', (_event, payload: { fileId: string; translationData: any }) => {
+    const win = createViewerWindow(payload);
+    return win.id;
+  });
+
+  // Viewer renderer fetches its initial data on load.
+  ipcMain.handle('viewer-get-data', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return null;
+    return getViewerPayload(win.id);
+  });
+
+  // Viewer notifies main window that an export completed.
+  ipcMain.on('viewer-notify-export', (_event, fileId: string, outputPath: string) => {
+    const main = getMainWindow();
+    if (main) {
+      main.webContents.send('viewer-export-done', { fileId, outputPath });
+    }
+  });
+
+  // Viewer notifies main window of edited regions on close.
+  ipcMain.on('viewer-notify-close', (_event, fileId: string, updatedRegions: [number, TranslatedRegion[]][]) => {
+    const main = getMainWindow();
+    if (main) {
+      main.webContents.send('viewer-closed', { fileId, updatedRegions });
+    }
   });
 }
