@@ -4,11 +4,14 @@
  *
  * pdfjs-dist v5 renders text glyphs via Path2D objects. node-canvas v3
  * does not natively support Path2D, so we polyfill it here before any
- * rendering takes place.
+ * rendering takes place. We also expose node-canvas's DOMMatrix as the
+ * global DOMMatrix so pdfjs's transform calls produce instances that
+ * node-canvas's setTransform accepts (otherwise it throws "Expected DOMMatrix").
  */
 import { Path2D, applyPath2DToCanvasRenderingContext } from 'path2d';
 (globalThis as any).Path2D = Path2D;
-import { createCanvas, CanvasRenderingContext2D, type Canvas } from 'canvas';
+import { createCanvas, CanvasRenderingContext2D, DOMMatrix, type Canvas } from 'canvas';
+(globalThis as any).DOMMatrix = DOMMatrix;
 applyPath2DToCanvasRenderingContext(CanvasRenderingContext2D as any);
 
 const TARGET_SIZE = 1024;
